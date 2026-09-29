@@ -5,8 +5,8 @@ const path = require('node:path');
 require('dotenv').config({ quiet: true });
 
 let clientId = process.env.DISCORD_CLIENT_ID || process.env.CID;
-let guildId = process.env.DISCORD_GUILD_ID;
-let token = process.env.DISCORD_TOKEN;
+let guildId = process.env.DISCORD_GUILD_ID || process.env.DGI;
+let token = process.env.DISCORD_TOKEN || process.env.DT;
 
 try {
     const config = require('./config.json');
