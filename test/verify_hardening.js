@@ -3,7 +3,13 @@ const { encrypt, decrypt, isEncrypted } = require('../lib/crypto');
 const { updateGuildConfig, getGuildConfig, sanitizeAuditDetails, logAudit, getRecentAuditLogs } = require('../lib/database');
 const { withRetry, normalizeNotionId, provisionWikiStructure, createCentralWikiHub } = require('../lib/notion');
 const { normalizeSection, sanitizeContent, withGuildLock, applyOrgInfoPatch, fetchCentralWikiMap, fetchOrgInfoContext } = require('../lib/orgInfoSync');
-const { handleFollowUpInteraction, getOrCreateMemberPage } = require('../lib/memberAssistant');
+const {
+    handleFollowUpInteraction,
+    getOrCreateMemberPage,
+    syncMeetingTasksAndPersonalNotes,
+    splitAssigneeNames,
+    resolveTarget,
+} = require('../lib/memberAssistant');
 const { sanitizeErrorMessage } = require('../lib/safeError');
 const { handleButton } = require('../commands/utility/notes');
 const {
@@ -1124,6 +1130,194 @@ async function runTests() {
         assert.notStrictEqual(pageUser1.pageId, pageUser2.pageId, 'Users with same name must resolve to distinct pages');
     });
 
+    test('splitAssigneeNames correctly splits compounds, handles collective words, and drops audio artifacts', () => {
+        // Compound strings
+        assert.deepStrictEqual(splitAssigneeNames('abhi & himanshu yadav'), ['abhi', 'himanshu yadav']);
+        assert.deepStrictEqual(splitAssigneeNames('himanshu & abhi'), ['himanshu', 'abhi']);
+        assert.deepStrictEqual(splitAssigneeNames('abhi (abhyudaya) & himanshu yadav'), ['abhi (abhyudaya)', 'himanshu yadav']);
+        assert.deepStrictEqual(splitAssigneeNames('Alice, Bob, and Charlie'), ['Alice', 'Bob', 'Charlie']);
+        assert.deepStrictEqual(splitAssigneeNames('@alice and @bob'), ['alice', 'bob']);
+
+        // Collective words
+        assert.deepStrictEqual(splitAssigneeNames('both'), ['__COLLECTIVE__']);
+        assert.deepStrictEqual(splitAssigneeNames('everyone'), ['__COLLECTIVE__']);
+        assert.deepStrictEqual(splitAssigneeNames('all'), ['__COLLECTIVE__']);
+
+        // Audio noise / artifacts
+        assert.deepStrictEqual(splitAssigneeNames('[audio unintelligible]'), []);
+        assert.deepStrictEqual(splitAssigneeNames('[audio unintelligible: skipped section]'), []);
+        assert.deepStrictEqual(splitAssigneeNames('unassigned'), []);
+        assert.deepStrictEqual(splitAssigneeNames('none'), []);
+    });
+
+    test('resolveTarget maps alias variations to canonical participants and ignores noise', () => {
+        const participants = [
+            { discordUserId: 'user_abhi_100', displayName: 'Abhi (Abhyudaya)' },
+            { discordUserId: 'user_himanshu_200', displayName: 'Himanshu Yadav' },
+        ];
+
+        // Nicknames and variations for Abhi
+        assert.strictEqual(resolveTarget('abhi', participants)?.discordUserId, 'user_abhi_100');
+        assert.strictEqual(resolveTarget('abhyudaya', participants)?.discordUserId, 'user_abhi_100');
+        assert.strictEqual(resolveTarget('abhyudaya (abhi)', participants)?.discordUserId, 'user_abhi_100');
+        assert.strictEqual(resolveTarget('Abhi (Abhyudaya)', participants)?.discordUserId, 'user_abhi_100');
+
+        // Nicknames and variations for Himanshu
+        assert.strictEqual(resolveTarget('himanshu', participants)?.discordUserId, 'user_himanshu_200');
+        assert.strictEqual(resolveTarget('himanshu yadav', participants)?.discordUserId, 'user_himanshu_200');
+        assert.strictEqual(resolveTarget('Himanshu Yadav', participants)?.discordUserId, 'user_himanshu_200');
+
+        // Noise
+        assert.strictEqual(resolveTarget('[audio unintelligible', participants), null);
+        assert.strictEqual(resolveTarget('both', participants), null);
+    });
+
+    await asyncTest('getOrCreateMemberPage rejects noise, collective terms, and compound strings', async () => {
+        const mockClient = {
+            dataSources: { query: async () => ({ results: [] }) },
+            databases: { retrieve: async () => ({}) },
+            pages: { create: async () => { throw new Error('Must not be called'); } },
+        };
+
+        const res1 = await getOrCreateMemberPage(mockClient, 'db_1', { displayName: '[audio unintelligible]' });
+        assert.strictEqual(res1, null, 'Must reject bracketed audio noise');
+
+        const res2 = await getOrCreateMemberPage(mockClient, 'db_1', { displayName: 'both' });
+        assert.strictEqual(res2, null, 'Must reject collective pronoun');
+
+        const res3 = await getOrCreateMemberPage(mockClient, 'db_1', { displayName: 'abhi & himanshu yadav' });
+        assert.strictEqual(res3, null, 'Must reject compound name without verified Discord ID');
+    });
+
+    await asyncTest('syncMeetingTasksAndPersonalNotes distributes shared tasks to individual members without duplicate pages', async () => {
+        const createdPages = [];
+        const appendedBlocks = new Map(); // pageId -> blocks[]
+        const createdTasks = [];
+
+        const mockClient = {
+            dataSources: {
+                query: async ({ filter }) => {
+                    const searchedId = filter?.rich_text?.equals;
+                    const found = createdPages.find((p) => p.discordId === searchedId);
+                    return { results: found ? [found] : [] };
+                },
+            },
+            databases: {
+                retrieve: async () => ({ data_sources: [{ id: 'ds-mock' }] }),
+            },
+            pages: {
+                create: async ({ properties }) => {
+                    const title = properties?.Name?.title?.[0]?.text?.content || properties?.Task?.title?.[0]?.text?.content;
+                    const discordId = properties?.['Discord ID']?.rich_text?.[0]?.text?.content;
+                    const assignee = properties?.Assignee?.rich_text?.[0]?.text?.content;
+
+                    if (properties?.Task) {
+                        createdTasks.push({ title, assignee });
+                        return { id: `task_${createdTasks.length}` };
+                    }
+
+                    const page = {
+                        id: `page_${discordId || title}`,
+                        discordId,
+                        title,
+                        properties: {
+                            Name: { title: [{ plain_text: title }] },
+                            'Discord ID': { rich_text: [{ plain_text: discordId || '' }] },
+                        },
+                    };
+                    createdPages.push(page);
+                    return page;
+                },
+            },
+            blocks: {
+                children: {
+                    append: async ({ block_id, children }) => {
+                        if (!appendedBlocks.has(block_id)) appendedBlocks.set(block_id, []);
+                        appendedBlocks.get(block_id).push(...children);
+                        return {};
+                    },
+                },
+            },
+        };
+
+        const participants = new Map([
+            ['user_abhi_100', 'Abhi (Abhyudaya)'],
+            ['user_himanshu_200', 'Himanshu Yadav'],
+        ]);
+
+        const meetingNotes = `
+## Meeting Summary
+Architecture review and sprint sync.
+
+## Key Discussion Points
+* abhyudaya (abhi) & himanshu yadav: Agreed on new API endpoints.
+* [audio unintelligible: skipped section]: Inaudible voice data.
+* abhi: Will prepare release branch.
+
+## Action Items
+* [ ] **Refactor API** - @abhi & himanshu yadav (Due: Friday)
+* [ ] **Deploy release** - @both (Due: Monday)
+* [ ] **Fix audio noise** - @[audio unintelligible]
+* [ ] **Review PR** - @Himanshu Yadav (Due: Tomorrow)
+* [ ] **Draft specs** - @abhyudaya
+`;
+
+        const res = await syncMeetingTasksAndPersonalNotes({
+            client: mockClient,
+            actionItemsDbId: 'mock_action_items_db',
+            membersDbId: 'mock_members_db',
+            meetingNotes,
+            participants,
+            session: { voiceChannelName: 'Dev Standup', startedAt: new Date('2026-10-09') },
+        });
+
+        assert.strictEqual(res.membersUpdated, 2);
+        assert.strictEqual(res.tasksCreated, 5);
+
+        // Exactly 2 member pages created: Abhi and Himanshu (NO combo pages, NO audio noise pages!)
+        assert.strictEqual(createdPages.length, 2, 'Must create exactly 2 member pages');
+        const pageTitles = createdPages.map((p) => p.title);
+        assert.ok(pageTitles.includes('Abhi (Abhyudaya)'));
+        assert.ok(pageTitles.includes('Himanshu Yadav'));
+        assert.ok(!pageTitles.some((t) => t.includes('&')), 'Must NEVER create a combined member page');
+        assert.ok(!pageTitles.some((t) => t.includes('unintelligible')), 'Must NEVER create an audio noise member page');
+        assert.ok(!pageTitles.some((t) => t.toLowerCase() === 'both'), 'Must NEVER create a "both" member page');
+
+        // Check Action Items DB:
+        // Refactor API was created with Assignee: "Abhi (Abhyudaya), Himanshu Yadav"
+        const refactorTask = createdTasks.find((t) => t.title === 'Refactor API');
+        assert.ok(refactorTask);
+        assert.strictEqual(refactorTask.assignee, 'Abhi (Abhyudaya), Himanshu Yadav');
+
+        // Fix audio noise was labeled Unassigned
+        const noiseTask = createdTasks.find((t) => t.title === 'Fix audio noise');
+        assert.ok(noiseTask);
+        assert.strictEqual(noiseTask.assignee, 'Unassigned');
+
+        // Check personal pages to-dos:
+        const abhiBlocks = appendedBlocks.get('page_user_abhi_100') || [];
+        const himanshuBlocks = appendedBlocks.get('page_user_himanshu_200') || [];
+
+        const abhiToDos = abhiBlocks.filter((b) => b.type === 'to_do').map((b) => b.to_do.rich_text[0].text.content);
+        const himanshuToDos = himanshuBlocks.filter((b) => b.type === 'to_do').map((b) => b.to_do.rich_text[0].text.content);
+
+        // Shared task is present on BOTH Abhi and Himanshu's personal pages!
+        assert.ok(abhiToDos.some((t) => t.includes('Refactor API')));
+        assert.ok(himanshuToDos.some((t) => t.includes('Refactor API')));
+
+        // "both" task is present on BOTH personal pages!
+        assert.ok(abhiToDos.some((t) => t.includes('Deploy release')));
+        assert.ok(himanshuToDos.some((t) => t.includes('Deploy release')));
+
+        // Individual tasks:
+        assert.ok(abhiToDos.some((t) => t.includes('Draft specs')));
+        assert.ok(himanshuToDos.some((t) => t.includes('Review PR')));
+
+        // Audio noise task was never assigned to anyone's personal page:
+        assert.ok(!abhiToDos.some((t) => t.includes('Fix audio noise')));
+        assert.ok(!himanshuToDos.some((t) => t.includes('Fix audio noise')));
+    });
+
     // =============================================================
     // Area 11: Cross-Guild Isolation in Button Handlers
     // =============================================================
@@ -1264,6 +1458,117 @@ async function runTests() {
         assert.ok(channelSends.length >= 1, 'Remaining chunks must be delivered via channel.send');
         for (const s of channelSends) {
             assert.ok(s.content.length <= 1900, 'Channel send chunk must be <= 1900 chars');
+        }
+    });
+
+    console.log(`\n--- [Area 13] Upfront Groq Rate Limit Guarding ---`);
+
+    test('checkGroqDailyLimit excludes rate_limited entries and detects limit exhaustion', () => {
+        const { db, checkGroqDailyLimit, logApiRequest, GROQ_LIMITS } = require('../lib/database');
+        const testGuild = 'guild_rlimit_test_' + Date.now();
+
+        // Initially zero usage -> allowed
+        const initial = checkGroqDailyLimit(testGuild);
+        assert.strictEqual(initial.allowed, true, 'Initial state must be allowed');
+
+        // Insert rate_limited requests -> should NOT increment active usage
+        logApiRequest({
+            guildId: testGuild,
+            service: 'groq_stt',
+            model: 'whisper-large-v3-turbo',
+            status: 'rate_limited',
+            tokensUsed: 500,
+            errorMessage: '429 Rate limit reached',
+        });
+        const afterRateLimited = checkGroqDailyLimit(testGuild);
+        assert.strictEqual(afterRateLimited.allowed, true, 'Rate limited entries must not count towards limit');
+
+        // Fill up to the limit with success requests
+        const now = Date.now();
+        const insertStmt = db.prepare(`
+            INSERT INTO api_requests (guild_id, service, model, status, tokens_used, created_at)
+            VALUES (?, 'groq_stt', 'whisper-large-v3-turbo', 'success', 10, ?)
+        `);
+        const runTx = db.transaction(() => {
+            for (let i = 0; i < GROQ_LIMITS.requestsPerDay; i++) {
+                insertStmt.run(testGuild, now);
+            }
+        });
+        runTx();
+
+        const exhausted = checkGroqDailyLimit(testGuild);
+        assert.strictEqual(exhausted.allowed, false, 'Daily limit must be flagged as exhausted');
+        assert.ok(exhausted.reason.includes('Groq daily request limit reached'), 'Reason must explain daily limit');
+    });
+
+    await asyncTest('startNotes immediately aborts with ephemeral message when Groq daily limit is hit', async () => {
+        const { db, GROQ_LIMITS } = require('../lib/database');
+        const { startNotes } = require('../commands/utility/notes/voice');
+        const testGuild = 'guild_start_limit_' + Date.now();
+
+        // Configure a mock Groq API key for this test guild so it checks this guild's usage
+        const { setGuildKeys } = require('../lib/database');
+        setGuildKeys(testGuild, { groqApiKey: 'gsk_mock_test_key_for_start' });
+
+        // Seed DB to reach the daily limit
+        const now = Date.now();
+        const insertStmt = db.prepare(`
+            INSERT INTO api_requests (guild_id, service, model, status, tokens_used, created_at)
+            VALUES (?, 'groq_stt', 'whisper-large-v3-turbo', 'success', 10, ?)
+        `);
+        const runTx = db.transaction(() => {
+            for (let i = 0; i < GROQ_LIMITS.requestsPerDay; i++) {
+                insertStmt.run(testGuild, now);
+            }
+        });
+        runTx();
+
+        let repliedPayload = null;
+        let voiceChannelAccessed = false;
+        const mockInteraction = {
+            guildId: testGuild,
+            channelId: 'channel_123',
+            member: {
+                get voice() {
+                    voiceChannelAccessed = true;
+                    return { channel: { id: 'vc_1', name: 'Meeting VC' } };
+                },
+            },
+            reply: async (payload) => {
+                repliedPayload = payload;
+            },
+            deferReply: async () => {
+                throw new Error('Should not deferReply when limit is reached upfront');
+            },
+        };
+
+        await startNotes(mockInteraction);
+
+        assert.ok(repliedPayload, 'Must reply to interaction');
+        assert.strictEqual(repliedPayload.flags, 64, 'Must reply ephemerally (MessageFlags.Ephemeral = 64)');
+        assert.ok(repliedPayload.content.includes('Cannot start notes'), 'Must notify user cannot start');
+        assert.ok(repliedPayload.content.includes('Groq daily request limit reached'), 'Must cite Groq daily request limit');
+        assert.strictEqual(voiceChannelAccessed, false, 'Must NOT attempt to join or inspect voice channel');
+    });
+
+    console.log(`\n--- [Area 14] Notes Modular Subcommand Routing ---`);
+
+    test('notes command exports SlashCommandBuilder with all 17 modular subcommands', () => {
+        const notesCmd = require('../commands/utility/notes');
+        assert.strictEqual(notesCmd.data.name, 'notes');
+        assert.strictEqual(typeof notesCmd.execute, 'function');
+        assert.strictEqual(typeof notesCmd.handleButton, 'function');
+
+        const subcommands = notesCmd.data.options.filter((opt) => opt.toJSON().type === 1).map((opt) => opt.name);
+        assert.strictEqual(subcommands.length, 17, 'Must have exactly 17 subcommands');
+
+        const expected = [
+            'start', 'stop', 'channel', 'setkey', 'setmodel', 'clearkey', 'keyinfo', 'stats',
+            'setnotion', 'notioninfo', 'clearnotion', 'notionprovision', 'createhub',
+            'syncmode', 'sync', 'ask', 'audit',
+        ];
+        for (const exp of expected) {
+            assert.ok(subcommands.includes(exp), `Missing subcommand: ${exp}`);
         }
     });
 
