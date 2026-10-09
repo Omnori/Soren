@@ -210,7 +210,8 @@ const MAN_PAGES = {
 			'       /notes syncmode mode:<automatic|manual>\n' +
 			'       /notes sync [notes:<string>]\n' +
 			'       /notes ask question:<string> [member:<user>]\n' +
-			'       /notes audit [limit:<int>]',
+			'       /notes audit [limit:<int>]\n' +
+			'       /notes notice [action:<view|add|set|clear>] [text:<string>] [category:<string>]',
 		description:
 			'Complete voice meeting intelligence suite. Connects to voice channels, captures\n' +
 			'multi-user audio streams with Opus decoding and 16kHz mono resampling, transcribes\n' +
@@ -355,6 +356,16 @@ const MAN_PAGES = {
 				description: '[Admin] View recent assistant Q&A and Notion update audit logs.',
 				options: [
 					{ name: 'limit', type: 'Integer', required: false, description: 'Number of logs to view (default: 10, max: 25)' },
+				],
+			},
+			{
+				name: 'notice',
+				synopsis: '/notes notice [action:<view|add|set|clear>] [text:<string>] [category:<string>]',
+				description: '[Admin/All] View or directly edit the Central Wiki Sprint Focus & Notice Board callout banner.',
+				options: [
+					{ name: 'action', type: 'String', required: false, description: 'Action: view, add, set, or clear (default: view)' },
+					{ name: 'text', type: 'String', required: false, description: 'Announcement text to add or set' },
+					{ name: 'category', type: 'String', required: false, description: 'Optional category prefix (e.g. Product Launch, Ops)' },
 				],
 			},
 		],

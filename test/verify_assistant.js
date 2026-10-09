@@ -298,11 +298,44 @@ async function runAssistantTests() {
     // -------------------------------------------------------------
     console.log('\n--- [Area 3] Grounded Assistant Prompting ---');
 
-    test('getSystemPrompt correctly injects workspace Table of Contents', () => {
+    test('TOOL_DEFINITIONS includes read_notice_board and update_notice_board', () => {
+        const { TOOL_DEFINITIONS } = require('../lib/assistantEngine');
+        const toolNames = TOOL_DEFINITIONS.map((t) => t.function.name);
+        assert.ok(toolNames.includes('read_notice_board'), 'Must register read_notice_board tool');
+        assert.ok(toolNames.includes('update_notice_board'), 'Must register update_notice_board tool');
+    });
+
+    test('TOOL_DEFINITIONS includes autonomous task, meeting, org info, and notes tools', () => {
+        const { TOOL_DEFINITIONS } = require('../lib/assistantEngine');
+        const toolNames = TOOL_DEFINITIONS.map((t) => t.function.name);
+        assert.ok(toolNames.includes('list_user_tasks'), 'Must register list_user_tasks tool');
+        assert.ok(toolNames.includes('update_user_task'), 'Must register update_user_task tool');
+        assert.ok(toolNames.includes('get_recent_meetings'), 'Must register get_recent_meetings tool');
+        assert.ok(toolNames.includes('read_org_info'), 'Must register read_org_info tool');
+        assert.ok(toolNames.includes('read_member_notes'), 'Must register read_member_notes tool');
+    });
+
+    test('getSystemPrompt correctly injects workspace Table of Contents and Notice Board tools', () => {
         const sysPrompt = getSystemPrompt(testGuildId);
         assert.ok(sysPrompt.includes('Central Wiki Hub'), 'Prompt must contain the indexed Wiki Title');
         assert.ok(sysPrompt.includes('Product Spec'), 'Prompt must contain indexed child page');
         assert.ok(sysPrompt.includes('Fix Stripe Webhook'), 'Prompt must contain cached task titles');
+        assert.ok(sysPrompt.includes('read_notice_board()'), 'Prompt must mention read_notice_board tool');
+        assert.ok(sysPrompt.includes('update_notice_board'), 'Prompt must mention update_notice_board tool');
+        assert.ok(sysPrompt.includes('list_user_tasks'), 'Prompt must mention list_user_tasks tool');
+        assert.ok(sysPrompt.includes('update_user_task'), 'Prompt must mention update_user_task tool');
+        assert.ok(sysPrompt.includes('get_recent_meetings'), 'Prompt must mention get_recent_meetings tool');
+        assert.ok(sysPrompt.includes('read_org_info'), 'Prompt must mention read_org_info tool');
+        assert.ok(sysPrompt.includes('read_member_notes'), 'Prompt must mention read_member_notes tool');
+    });
+
+    test('getSystemPrompt correctly injects ACTIVE MEMBER FOCUS when targetMember is supplied', () => {
+        const sysPrompt = getSystemPrompt(testGuildId, {
+            targetMember: { id: 'user_123', displayName: 'Abhi' },
+        });
+        assert.ok(sysPrompt.includes('ACTIVE MEMBER FOCUS'), 'Prompt must include ACTIVE MEMBER FOCUS header');
+        assert.ok(sysPrompt.includes('Abhi'), 'Prompt must mention member display name');
+        assert.ok(sysPrompt.includes('user_123'), 'Prompt must mention member id');
     });
 
     console.log('\n======================================================');

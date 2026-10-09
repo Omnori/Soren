@@ -130,10 +130,36 @@ client.on(Events.MessageCreate, async (message) => {
             // Trigger typing indicator
             await message.channel.sendTyping();
 
+            // Build conversation history for thread / channel memory (up to 6 recent messages)
+            let conversationHistory = [];
+            try {
+                const fetched = await message.channel.messages.fetch({ limit: 6 });
+                const sorted = Array.from(fetched.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+                for (const m of sorted) {
+                    if (!m.content) continue;
+                    const isBot = m.author.id === client.user.id;
+                    const mentionPattern = new RegExp(`<@!?${client.user.id}>`, 'g');
+                    const cleanText = m.content.replace(mentionPattern, '').trim();
+                    if (!cleanText) continue;
+                    conversationHistory.push({
+                        role: isBot ? 'assistant' : 'user',
+                        content: cleanText,
+                        name: m.author.username,
+                    });
+                }
+            } catch {
+                conversationHistory = [{ role: 'user', content: cleanMessage }];
+            }
+
+            if (conversationHistory.length === 0) {
+                conversationHistory = [{ role: 'user', content: cleanMessage }];
+            }
+
             // Run grounded assistant chat
-            const answer = await runGroundedAssistant(guildId, message.author.id, [
-                { role: 'user', content: cleanMessage },
-            ]);
+            const answer = await runGroundedAssistant(guildId, message.author.id, conversationHistory, {
+                channelId: message.channel.id,
+                entryPoint: 'mention',
+            });
 
             await sendSafeMessageReply(message, answer, { fileName: 'soren_reply.md' });
         } catch (err) {

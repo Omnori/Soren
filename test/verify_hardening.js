@@ -710,6 +710,92 @@ async function runTests() {
         assert.ok(map.includes('📄 Page: Diyo growth plan'), 'Must include child page from column');
     });
 
+    await asyncTest('fetchCentralWikiMap recurses into Hub pages, parses tables, and renders links', async () => {
+        const mockClient = {
+            blocks: {
+                children: {
+                    list: async ({ block_id }) => {
+                        if (block_id === 'root_wiki') {
+                            return {
+                                results: [
+                                    {
+                                        id: 'hub-company',
+                                        type: 'child_page',
+                                        child_page: { title: 'Hub — Company' },
+                                    },
+                                    {
+                                        id: 'link-1',
+                                        type: 'link_to_page',
+                                        link_to_page: { page_id: 'target-page-id-123' },
+                                    },
+                                    {
+                                        id: 'tbl-1',
+                                        type: 'table',
+                                    },
+                                ],
+                                has_more: false,
+                            };
+                        }
+                        if (block_id === 'hub-company') {
+                            return {
+                                results: [
+                                    {
+                                        id: 'callout-purpose',
+                                        type: 'callout',
+                                        callout: { rich_text: [{ plain_text: 'Purpose: Who we are, why we exist' }] },
+                                    },
+                                    {
+                                        id: 'page-org-info',
+                                        type: 'child_page',
+                                        child_page: { title: 'Org Info' },
+                                    },
+                                ],
+                                has_more: false,
+                            };
+                        }
+                        if (block_id === 'tbl-1') {
+                            return {
+                                results: [
+                                    {
+                                        id: 'row-header',
+                                        type: 'table_row',
+                                        table_row: {
+                                            cells: [
+                                                [{ plain_text: 'Role' }],
+                                                [{ plain_text: 'Top Links' }],
+                                            ],
+                                        },
+                                    },
+                                    {
+                                        id: 'row-data',
+                                        type: 'table_row',
+                                        table_row: {
+                                            cells: [
+                                                [{ plain_text: 'Founders' }],
+                                                [{ plain_text: 'Org Info, Pitch Deck' }],
+                                            ],
+                                        },
+                                    },
+                                ],
+                                has_more: false,
+                            };
+                        }
+                        return { results: [], has_more: false };
+                    },
+                },
+            },
+        };
+
+        const map = await fetchCentralWikiMap(mockClient, 'root_wiki');
+        assert.ok(map.includes('📄 Page: Hub — Company'), 'Must include Hub heading');
+        assert.ok(map.includes('> [Notice] Purpose: Who we are, why we exist'), 'Must recurse into Hub child callout');
+        assert.ok(map.includes('📄 Page: Org Info'), 'Must recurse into Hub child page');
+        assert.ok(map.includes('🔗 Link: target-page-id-123'), 'Must format link_to_page');
+        assert.ok(map.includes('| Role | Top Links |'), 'Must format table header');
+        assert.ok(map.includes('| --- | --- |'), 'Must include markdown table separator');
+        assert.ok(map.includes('| Founders | Org Info, Pitch Deck |'), 'Must format table rows');
+    });
+
     await asyncTest('applyOrgInfoPatch correctly maps and adds items to Soren canonical sections', async () => {
         const appended = [];
         const mockClient = {
@@ -1552,21 +1638,145 @@ Architecture review and sprint sync.
         assert.strictEqual(voiceChannelAccessed, false, 'Must NOT attempt to join or inspect voice channel');
     });
 
+    console.log(`\n--- [Area 13b] Central Wiki Notice Board Management & Auto-Sync ---`);
+
+    await asyncTest('findNoticeBoardBlock and parseNoticeBoardText extract notice items and policies', async () => {
+        const { findNoticeBoardBlock, parseNoticeBoardText } = require('../lib/noticeBoard');
+        const mockClient = {
+            blocks: {
+                children: {
+                    list: async () => ({
+                        results: [
+                            {
+                                id: 'block-nb',
+                                type: 'callout',
+                                callout: {
+                                    rich_text: [
+                                        { plain_text: '⚡ Sprint Focus & Notice Board\n• 🚀 Product Launch: v1.0 released\n• 📋 Team Ops: Standups at 10 AM\n\n🎯 North Star: Scale users\n💡 Core Policy: Never dilute more than 5%.' },
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+            },
+        };
+
+        const found = await findNoticeBoardBlock(mockClient, 'mock-wiki-page');
+        assert.ok(found, 'Must find notice board callout block');
+        assert.strictEqual(found.id, 'block-nb');
+
+        const parsed = parseNoticeBoardText(found.text);
+        assert.strictEqual(parsed.items.length, 2);
+        assert.strictEqual(parsed.items[0], '🚀 Product Launch: v1.0 released');
+        assert.strictEqual(parsed.items[1], '📋 Team Ops: Standups at 10 AM');
+        assert.strictEqual(parsed.northStar, 'Scale users');
+        assert.strictEqual(parsed.corePolicy, 'Never dilute more than 5%.');
+    });
+
+    await asyncTest('updateNoticeBoardCallout appends announcements and preserves core policies', async () => {
+        const { updateNoticeBoardCallout } = require('../lib/noticeBoard');
+        let updatedPayload = null;
+        const mockClient = {
+            blocks: {
+                children: {
+                    list: async () => ({
+                        results: [
+                            {
+                                id: 'block-nb',
+                                type: 'callout',
+                                callout: {
+                                    rich_text: [
+                                        { plain_text: '⚡ Sprint Focus & Notice Board\n• 🚀 Product Launch: v1.0\n\n🎯 North Star: Scale users\n💡 Core Policy: Never dilute more than 5%.' },
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+                update: async (payload) => {
+                    updatedPayload = payload;
+                    return payload;
+                },
+            },
+        };
+
+        const res = await updateNoticeBoardCallout(mockClient, 'mock-wiki-page', {
+            action: 'add',
+            text: 'Release polishing scheduled for Friday',
+            category: 'Notice',
+        });
+
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.items.length, 2);
+        assert.strictEqual(res.items[1], 'Notice: Release polishing scheduled for Friday');
+        assert.ok(updatedPayload, 'Must call client.blocks.update');
+        assert.strictEqual(updatedPayload.block_id, 'block-nb');
+
+        const richTextPlain = updatedPayload.callout.rich_text.map(t => t.text?.content || '').join('');
+        assert.ok(richTextPlain.includes('Notice: Release polishing scheduled for Friday'));
+        assert.ok(richTextPlain.includes('Core Policy:'));
+        assert.ok(richTextPlain.includes('Never dilute more than 5%.'));
+    });
+
+    await asyncTest('syncNoticeBoardFromMeetingUpdates syncs sprint announcements from meeting updates', async () => {
+        const { syncNoticeBoardFromMeetingUpdates } = require('../lib/noticeBoard');
+        let updatedCallout = null;
+        const mockClient = {
+            blocks: {
+                children: {
+                    list: async () => ({
+                        results: [
+                            {
+                                id: 'block-nb',
+                                type: 'callout',
+                                callout: {
+                                    rich_text: [
+                                        { plain_text: '⚡ Sprint Focus & Notice Board\n• 🚀 Product Launch: v1.0\n\n🎯 North Star: Scale\n💡 Core Policy: Never dilute more than 5%.' },
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+                update: async (payload) => {
+                    updatedCallout = payload;
+                    return payload;
+                },
+            },
+        };
+
+        const meetingUpdates = [
+            { action: 'add', section: 'Sprint Focus & Priorities', content: 'Demo scheduled for Monday at 3 PM' },
+            { action: 'add', section: 'Active Products & Tech Lab', content: 'Nori V-Cam camera driver fixed' },
+        ];
+
+        const syncRes = await syncNoticeBoardFromMeetingUpdates({
+            client: mockClient,
+            wikiPageId: 'wiki-page-123',
+            updates: meetingUpdates,
+        });
+
+        assert.strictEqual(syncRes.applied, 1);
+        assert.strictEqual(syncRes.items[0], 'Demo scheduled for Monday at 3 PM');
+        assert.ok(updatedCallout, 'Must update notice board block');
+    });
+
     console.log(`\n--- [Area 14] Notes Modular Subcommand Routing ---`);
 
-    test('notes command exports SlashCommandBuilder with all 17 modular subcommands', () => {
+    test('notes command exports SlashCommandBuilder with all 18 modular subcommands', () => {
         const notesCmd = require('../commands/utility/notes');
         assert.strictEqual(notesCmd.data.name, 'notes');
         assert.strictEqual(typeof notesCmd.execute, 'function');
         assert.strictEqual(typeof notesCmd.handleButton, 'function');
 
         const subcommands = notesCmd.data.options.filter((opt) => opt.toJSON().type === 1).map((opt) => opt.name);
-        assert.strictEqual(subcommands.length, 17, 'Must have exactly 17 subcommands');
+        assert.strictEqual(subcommands.length, 18, 'Must have exactly 18 subcommands');
 
         const expected = [
             'start', 'stop', 'channel', 'setkey', 'setmodel', 'clearkey', 'keyinfo', 'stats',
             'setnotion', 'notioninfo', 'clearnotion', 'notionprovision', 'createhub',
-            'syncmode', 'sync', 'ask', 'audit',
+            'syncmode', 'sync', 'ask', 'audit', 'notice',
         ];
         for (const exp of expected) {
             assert.ok(subcommands.includes(exp), `Missing subcommand: ${exp}`);

@@ -107,11 +107,15 @@ async function handleSync(interaction) {
             patchDetails += `\n_...and ${omittedCount} additional patch(es)._`;
         }
 
+        const nbSection = syncRes.noticeBoardUpdated
+            ? `\n\n⚡ **Central Wiki Notice Board:** Synchronized ${syncRes.noticeBoardItems.length} announcement(s)!`
+            : '';
+
         await interaction.editReply({
             content: `✅ **Org Info Synchronized for ${interaction.guild.name}!**\n` +
                 `- **Facts Added:** ${syncRes.addedCount}\n` +
                 `- **Facts Updated:** ${syncRes.updatedCount}\n\n` +
-                `**Applied Block Patches:**\n${patchDetails.trim()}`,
+                `**Applied Block Patches:**\n${patchDetails.trim()}${nbSection}`,
         });
     } catch (err) {
         console.error(`[notes:${guildId}] Org Info sync failed:`, err);

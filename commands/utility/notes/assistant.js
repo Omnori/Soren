@@ -6,6 +6,7 @@ const {
     getRecentAuditLogs,
 } = require('../../../lib/guildConfig');
 const { fetchOrgInfoContext } = require('../../../lib/orgInfoSync');
+const { runGroundedAssistant } = require('../../../lib/assistantEngine');
 const { askGroundedAssistant, handleFollowUpInteraction } = require('../../../lib/memberAssistant');
 const { sendSafeChunkedReply, sendSafeMessageReply } = require('../../../lib/discordUtils');
 const { sanitizeErrorMessage } = require('../../../lib/safeError');
@@ -71,17 +72,16 @@ async function handleAsk(interaction) {
         const groqModel = config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
         const geminiModel = config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
-        const qRes = await askGroundedAssistant({
-            question,
-            callerUser: interaction.user,
+        let queryPrompt = question;
+        if (targetMember && targetMember.id !== interaction.user.id) {
+            queryPrompt = `[Query Context: Target Member @${targetMember.displayName || targetMember.username} (Discord ID: ${targetMember.id})]\n${question}`;
+        }
+
+        const answer = await runGroundedAssistant(guildId, interaction.user.id, [
+            { role: 'user', content: queryPrompt },
+        ], {
             targetMember,
-            guildConfig: config,
-            recentMeetings,
-            orgInfoText,
-            provider,
-            apiKey: provider === 'gemini' ? geminiKey : groqKey,
-            model: provider === 'gemini' ? geminiModel : groqModel,
-            guildId,
+            entryPoint: 'notes_ask',
         });
 
         logAudit({
@@ -97,7 +97,7 @@ async function handleAsk(interaction) {
             ? ` *(Target Member: <@${targetMember.id}>)*`
             : '';
 
-        const replyContent = `**Question:** "${question}"${targetNote}\n\n${qRes.answer}\n\n` +
+        const replyContent = `**Question:** "${question}"${targetNote}\n\n${answer}\n\n` +
             `*💬 **Conversation Active (2 mins):** Reply in this channel to ask follow-up questions or update tasks/notes (e.g. \`mark task ... as done\` or \`add note: ...\`). Type \`done\` to close.*`;
 
         await sendSafeChunkedReply(interaction, replyContent, {

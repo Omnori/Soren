@@ -117,14 +117,14 @@ async function runTests() {
 		});
 	}
 
-	test('notes man page documents all 17 subcommands', () => {
+	test('notes man page documents all 18 subcommands', () => {
 		const notesMan = MAN_PAGES.notes;
-		assert.strictEqual(notesMan.subcommands.length, 17);
+		assert.strictEqual(notesMan.subcommands.length, 18);
 		const subNames = notesMan.subcommands.map((s) => s.name);
 		const expectedSubs = [
 			'start', 'stop', 'channel', 'setkey', 'setmodel', 'clearkey',
 			'keyinfo', 'stats', 'setnotion', 'notioninfo', 'clearnotion',
-			'notionprovision', 'createhub', 'syncmode', 'sync', 'ask', 'audit',
+			'notionprovision', 'createhub', 'syncmode', 'sync', 'ask', 'audit', 'notice',
 		];
 		for (const expSub of expectedSubs) {
 			assert.ok(subNames.includes(expSub), `notes subcommands must include ${expSub}`);

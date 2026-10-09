@@ -598,7 +598,8 @@ async function stopNotes(interaction) {
                     force: true,
                 });
                 if (syncRes.success && syncRes.applied > 0) {
-                    orgInfoOutput = `\n- **Org Info:** 🔄 Auto-synced ${syncRes.applied} facts/decisions to Org Info.`;
+                    const nbNotice = syncRes.noticeBoardUpdated ? ' & Central Notice Board' : '';
+                    orgInfoOutput = `\n- **Org Info:** 🔄 Auto-synced ${syncRes.applied} facts/decisions to Org Info${nbNotice}.`;
                 }
             } catch (err) {
                 console.error(`[notes:${guildId}] Org Info auto-sync failed non-fatally:`, err.message);

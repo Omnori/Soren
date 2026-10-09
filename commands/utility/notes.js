@@ -18,6 +18,7 @@ const {
 } = require('./notes/notion');
 const { handleSyncMode, handleSync } = require('./notes/sync');
 const { handleAsk, handleAudit } = require('./notes/assistant');
+const { handleNotice } = require('./notes/notice');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -200,6 +201,35 @@ module.exports = {
                         .setDescription('Number of logs to view (default: 10, max: 25)')
                         .setRequired(false),
                 ),
+        )
+        .addSubcommand((sub) =>
+            sub
+                .setName('notice')
+                .setDescription('View or directly edit the Central Wiki Sprint Focus & Notice Board (Admins only)')
+                .addStringOption((opt) =>
+                    opt
+                        .setName('action')
+                        .setDescription('Action to perform: view, add, set, or clear')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'View current notice board', value: 'view' },
+                            { name: 'Add announcement / focus item', value: 'add' },
+                            { name: 'Set entire notice board content', value: 'set' },
+                            { name: 'Clear notice board announcements', value: 'clear' },
+                        ),
+                )
+                .addStringOption((opt) =>
+                    opt
+                        .setName('text')
+                        .setDescription('Announcement text to add or set (not needed for view/clear)')
+                        .setRequired(false),
+                )
+                .addStringOption((opt) =>
+                    opt
+                        .setName('category')
+                        .setDescription('Optional category prefix (e.g. Product Launch, Services, Team Ops)')
+                        .setRequired(false),
+                ),
         ),
 
     async execute(interaction) {
@@ -221,6 +251,7 @@ module.exports = {
         if (sub === 'sync') return handleSync(interaction);
         if (sub === 'ask') return handleAsk(interaction);
         if (sub === 'audit') return handleAudit(interaction);
+        if (sub === 'notice') return handleNotice(interaction);
     },
     handleButton,
 };
