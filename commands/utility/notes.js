@@ -70,7 +70,7 @@ module.exports = {
                         .setName('provider')
                         .setDescription('Preferred summary AI provider')
                         .setRequired(false)
-                        .addChoices({ name: 'Groq', value: 'groq' }, { name: 'Gemini', value: 'gemini' }),
+                        .addChoices({ name: 'Groq', value: 'groq' }, { name: 'Gemini', value: 'gemini' }, { name: 'NVIDIA', value: 'nvidia' }),
                 )
                 .addStringOption((opt) =>
                     opt
@@ -100,7 +100,18 @@ module.exports = {
         .addSubcommand((sub) =>
             sub
                 .setName('setmodel')
-                .setDescription('Set summary AI model code names for Groq or Gemini (Admins only)')
+                .setDescription('Set summary AI provider and model code names (Admins only)')
+                .addStringOption((opt) =>
+                    opt
+                        .setName('provider')
+                        .setDescription('Preferred summary AI provider')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Groq', value: 'groq' },
+                            { name: 'Gemini', value: 'gemini' },
+                            { name: 'NVIDIA', value: 'nvidia' }
+                        )
+                )
                 .addStringOption((opt) =>
                     opt
                         .setName('groq_model')

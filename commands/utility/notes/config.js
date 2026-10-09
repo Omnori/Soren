@@ -73,10 +73,14 @@ async function handleSetKey(interaction) {
     if (groqKey) updatePayload.groqApiKey = groqKey.trim();
     if (geminiKey) updatePayload.geminiApiKey = geminiKey.trim();
     if (nvidiaKey) updatePayload.nvidiaApiKey = nvidiaKey.trim();
-    if (provider) updatePayload.summaryProvider = provider;
+    if (provider) {
+        updatePayload.summaryProvider = provider.toLowerCase().trim();
+    } else if (nvidiaKey && !groqKey && !geminiKey) {
+        // Automatically set NVIDIA as provider if user sets nvidia_key without other keys
+        updatePayload.summaryProvider = 'nvidia';
+    }
     if (groqModel) updatePayload.groqModel = groqModel.trim();
     if (geminiModel) updatePayload.geminiModel = geminiModel.trim();
-    if (nvidiaModel) updatePayload.nvidiaModel = nvidiaModel.trim();
     if (nvidiaModel) updatePayload.nvidiaModel = nvidiaModel.trim();
 
     setGuildKeys(guildId, updatePayload);
