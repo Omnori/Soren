@@ -33,7 +33,7 @@ module.exports = {
                         .setName('provider')
                         .setDescription('Override summary AI provider for this session')
                         .setRequired(false)
-                        .addChoices({ name: 'Groq', value: 'groq' }, { name: 'Gemini', value: 'gemini' }),
+                        .addChoices({ name: 'Groq', value: 'groq' }, { name: 'Gemini', value: 'gemini' }, { name: 'NVIDIA', value: 'nvidia' }),
                 )
                 .addStringOption((opt) =>
                     opt
@@ -83,6 +83,18 @@ module.exports = {
                         .setName('gemini_model')
                         .setDescription('Gemini summary model code name (e.g. gemini-2.5-flash, gemini-1.5-pro)')
                         .setRequired(false),
+                )
+                .addStringOption((opt) =>
+                    opt
+                        .setName('nvidia_key')
+                        .setDescription('NVIDIA NIM API key (starts with nvapi-)')
+                        .setRequired(false),
+                )
+                .addStringOption((opt) =>
+                    opt
+                        .setName('nvidia_model')
+                        .setDescription('NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)')
+                        .setRequired(false),
                 ),
         )
         .addSubcommand((sub) =>
@@ -99,6 +111,12 @@ module.exports = {
                     opt
                         .setName('gemini_model')
                         .setDescription('Gemini summary model code name (e.g. gemini-2.5-flash, gemini-1.5-pro)')
+                        .setRequired(false),
+                )
+                .addStringOption((opt) =>
+                    opt
+                        .setName('nvidia_model')
+                        .setDescription('NVIDIA summary model code name (e.g. nvidia/nemotron-3-super-120b-a12b)')
                         .setRequired(false),
                 ),
         )

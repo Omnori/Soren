@@ -16,7 +16,7 @@ const { pipeline } = require('node:stream/promises');
 const { Pcm48kStereoTo16kMono } = require('../../../lib/pcmResampler');
 const { ResilientOpusDecoder } = require('../../../lib/opusDecoder');
 const { createSession, getSession, endSession } = require('../../../lib/notesSessions');
-const { transcribePcm16kMono: transcribeWithGroq, summarizeTranscriptWithGroq } = require('../../../lib/groqService');
+const { transcribePcm16kMono: transcribeWithGroq, summarizeTranscriptWithGroq, summarizeTranscriptWithNvidia } = require('../../../lib/groqService');
 const { summarizeTranscript } = require('../../../lib/geminiService');
 const { fetchOrgInfoContext, syncOrgInfoForGuild } = require('../../../lib/orgInfoSync');
 const { syncMeetingTasksAndPersonalNotes } = require('../../../lib/memberAssistant');
@@ -250,13 +250,16 @@ async function startNotes(interaction) {
     const providerOverride = interaction.options.getString('provider');
     const modelOverride = interaction.options.getString('model');
 
-    const summaryProvider = providerOverride || guildConfig.summaryProvider || process.env.SUMMARY_PROVIDER || 'groq';
+    const summaryProvider = providerOverride || guildConfig.summaryProvider || process.env.SUMMARY_PROVIDER || 'nvidia';
     const groqModel = (summaryProvider === 'groq' && modelOverride)
         ? modelOverride.trim()
         : (guildConfig.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b');
     const geminiModel = (summaryProvider === 'gemini' && modelOverride)
         ? modelOverride.trim()
         : (guildConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash');
+    const nvidiaModel = (summaryProvider === 'nvidia' && modelOverride)
+        ? modelOverride.trim()
+        : (guildConfig.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b');
 
     const session = createSession(guildId, {
         connection,
@@ -266,9 +269,11 @@ async function startNotes(interaction) {
         participants: new Map(),
         groqApiKey: groqKey,
         geminiApiKey: guildConfig.geminiApiKey || process.env.GEMINI_API_KEY,
+        nvidiaApiKey: guildConfig.nvidiaApiKey || process.env.NVIDIA_API_KEY,
         summaryProvider,
         groqModel,
         geminiModel,
+        nvidiaModel,
         sttErrors: [],
     });
 
@@ -278,13 +283,13 @@ async function startNotes(interaction) {
     session.onSpeakingStart = onSpeakingStart;
 
     const modelName = process.env.GROQ_MODEL || 'whisper-large-v3-turbo';
-    const activeSummaryModel = summaryProvider === 'gemini' ? geminiModel : groqModel;
+    const activeSummaryModel = summaryProvider === 'gemini' ? geminiModel : (summaryProvider === 'nvidia' ? nvidiaModel : groqModel);
     await interaction.editReply(
         `Joined **${voiceChannel.name}** and started taking notes (${modelName} STT | ${summaryProvider.toUpperCase()} \`${activeSummaryModel}\` Summary). Run \`/notes stop\` when done.`,
     );
 }
 
-async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, geminiKey, provider, groqModel, geminiModel, orgContext = null }) {
+async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, geminiKey, nvidiaKey, provider, groqModel, geminiModel, nvidiaModel, orgContext = null }) {
     let effectiveOrgContext = orgContext;
     if (effectiveOrgContext === null && guildId) {
         try {
@@ -305,7 +310,43 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
     let totalTokens = 0;
     let lastError = null;
 
-    if (provider === 'gemini' && geminiKey) {
+    if (provider === 'nvidia' && (nvidiaKey || process.env.NVIDIA_API_KEY)) {
+        try {
+            const res = await summarizeTranscriptWithNvidia(transcriptText, nvidiaKey, nvidiaModel, guildId, effectiveOrgContext);
+            summary = res.summary || res;
+            totalTokens = res.totalTokens || 0;
+            if (guildId) {
+                logApiRequest({
+                    guildId,
+                    service: 'nvidia_summary',
+                    model: nvidiaModel || 'nvidia/nemotron-3-super-120b-a12b',
+                    status: 'success',
+                    tokensUsed: totalTokens,
+                });
+            }
+        } catch (error) {
+            lastError = error;
+            console.warn('[notes] NVIDIA summarization failed, trying fallback:', error);
+            if (guildId) {
+                logApiRequest({
+                    guildId,
+                    service: 'nvidia_summary',
+                    model: nvidiaModel,
+                    status: 'error',
+                    errorMessage: error?.message || String(error),
+                });
+            }
+            if (groqKey) {
+                try {
+                    const res = await summarizeTranscriptWithGroq(transcriptText, groqKey, groqModel, guildId, effectiveOrgContext);
+                    summary = res.summary || res;
+                    totalTokens = res.totalTokens || 0;
+                } catch (e) {
+                    lastError = e;
+                }
+            }
+        }
+    } else if (provider === 'gemini' && geminiKey) {
         try {
             const res = await summarizeTranscript(transcriptText, geminiKey, geminiModel, effectiveOrgContext);
             summary = res.summary || res;
@@ -484,17 +525,21 @@ async function stopNotes(interaction) {
 
     const groqKey = session.groqApiKey;
     const geminiKey = session.geminiApiKey;
-    const provider = session.summaryProvider || 'groq';
+    const nvidiaKey = session.nvidiaApiKey;
+    const provider = session.summaryProvider || 'nvidia';
     const groqModel = session.groqModel;
     const geminiModel = session.geminiModel;
+    const nvidiaModel = session.nvidiaModel;
 
     const { summary, lastError } = await summarizeTranscriptContent(transcriptText, {
         guildId,
         groqKey,
         geminiKey,
+        nvidiaKey,
         provider,
         groqModel,
         geminiModel,
+        nvidiaModel,
     });
 
     if (!summary) {

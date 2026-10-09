@@ -199,8 +199,8 @@ const MAN_PAGES = {
 			'       /notes channel [channel:<channel>]\n' +
 			'       /notes stats\n' +
 			'       /notes keyinfo\n' +
-			'       /notes setkey [groq_key] [gemini_key] [provider] [groq_model] [gemini_model]\n' +
-			'       /notes setmodel [groq_model] [gemini_model]\n' +
+			'       /notes setkey [groq_key] [gemini_key] [nvidia_key] [provider] [groq_model] [gemini_model] [nvidia_model]\n' +
+			'       /notes setmodel [groq_model] [gemini_model] [nvidia_model]\n' +
 			'       /notes clearkey\n' +
 			'       /notes setnotion token:<token> wiki:<wiki>\n' +
 			'       /notes notioninfo\n' +
@@ -233,7 +233,7 @@ const MAN_PAGES = {
 				synopsis: '/notes start [provider:<groq|gemini>] [model:<string>]',
 				description: 'Join caller\'s voice channel and begin live audio capture and transcription.',
 				options: [
-					{ name: 'provider', type: 'String', required: false, description: 'Override summary AI provider (\'groq\' or \'gemini\')' },
+					{ name: 'provider', type: 'String', required: false, description: 'Override summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
 					{ name: 'model', type: 'String', required: false, description: 'Override summary model code name (e.g. gemini-2.5-flash)' },
 				],
 			},
@@ -253,19 +253,21 @@ const MAN_PAGES = {
 			},
 			{
 				name: 'setkey',
-				synopsis: '/notes setkey [groq_key] [gemini_key] [provider] [groq_model] [gemini_model]',
-				description: '[Admin] Configure Groq and Gemini API keys and default summary models for this server.',
+				synopsis: '/notes setkey [groq_key] [gemini_key] [nvidia_key] [provider] [groq_model] [gemini_model] [nvidia_model]',
+				description: '[Admin] Configure Groq, Gemini, and NVIDIA API keys and default summary models for this server.',
 				options: [
 					{ name: 'groq_key', type: 'String', required: false, description: 'Groq API Key (used for voice STT and Groq summaries)' },
 					{ name: 'gemini_key', type: 'String', required: false, description: 'Gemini API Key (optional for Gemini summaries)' },
-					{ name: 'provider', type: 'String', required: false, description: 'Preferred summary AI provider (\'groq\' or \'gemini\')' },
+					{ name: 'provider', type: 'String', required: false, description: 'Preferred summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
 					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name (e.g. openai/gpt-oss-120b)' },
 					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-2.5-flash)' },
+					{ name: 'nvidia_key', type: 'String', required: false, description: 'NVIDIA NIM API key (starts with nvapi-)' },
+					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)' },
 				],
 			},
 			{
 				name: 'setmodel',
-				synopsis: '/notes setmodel [groq_model] [gemini_model]',
+				synopsis: '/notes setmodel [groq_model] [gemini_model] [nvidia_model]',
 				description: '[Admin] Set summary AI model code names without re-entering API keys.',
 				options: [
 					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name' },
