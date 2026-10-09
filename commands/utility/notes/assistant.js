@@ -72,13 +72,8 @@ async function handleAsk(interaction) {
         const groqModel = config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
         const geminiModel = config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
-        let queryPrompt = question;
-        if (targetMember && targetMember.id !== interaction.user.id) {
-            queryPrompt = `[Query Context: Target Member @${targetMember.displayName || targetMember.username} (Discord ID: ${targetMember.id})]\n${question}`;
-        }
-
         const answer = await runGroundedAssistant(guildId, interaction.user.id, [
-            { role: 'user', content: queryPrompt },
+            { role: 'user', content: question },
         ], {
             targetMember,
             entryPoint: 'notes_ask',

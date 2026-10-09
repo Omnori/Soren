@@ -12,7 +12,7 @@ const {
     deleteUserMapping,
 } = require('../lib/database');
 const { scanNotionWiki } = require('../lib/notionScanner');
-const { runGroundedAssistant, getSystemPrompt } = require('../lib/assistantEngine');
+const { runGroundedAssistant, getSystemPrompt, getBaseSystemPrompt, getOrgContextBlock, getUserQueryBlock, formatAskPrompt } = require('../lib/assistantEngine');
 
 async function runAssistantTests() {
     console.log('🚀 Starting Soren Assistant Verification & Integration Suite...\n');
@@ -336,6 +336,42 @@ async function runAssistantTests() {
         assert.ok(sysPrompt.includes('ACTIVE MEMBER FOCUS'), 'Prompt must include ACTIVE MEMBER FOCUS header');
         assert.ok(sysPrompt.includes('Abhi'), 'Prompt must mention member display name');
         assert.ok(sysPrompt.includes('user_123'), 'Prompt must mention member id');
+    });
+
+    test('getBaseSystemPrompt returns invariant base prompt without guild TOC', () => {
+        const basePrompt = getBaseSystemPrompt();
+        assert.ok(basePrompt.includes('You are "Soren"'), 'Must define Soren identity');
+        assert.ok(basePrompt.includes('STRICT GROUNDING & BEHAVIORAL RULES'), 'Must include behavioral rules');
+        assert.ok(basePrompt.includes('read_notice_board()'), 'Must include notice board tool description');
+        assert.ok(basePrompt.includes('list_user_tasks'), 'Must include task list tool description');
+        assert.ok(!basePrompt.includes('Central Wiki Hub'), 'Base prompt must not contain guild TOC');
+        assert.ok(!basePrompt.includes('ACTIVE MEMBER FOCUS'), 'Base prompt must not contain active member focus');
+    });
+
+    test('getOrgContextBlock formats Omnori context, hubs, and guild workspace TOC', () => {
+        const orgBlock = getOrgContextBlock(testGuildId, {
+            targetMember: { id: 'user_456', displayName: 'Himanshu' },
+        });
+        assert.ok(orgBlock.includes('ORGANIZATIONAL CONTEXT (OMNORI)'), 'Must include org context header');
+        assert.ok(orgBlock.includes('Never dilute more than 5%'), 'Must enforce 5% dilution policy');
+        assert.ok(orgBlock.includes('Hub — Company'), 'Must include 6 Hubs architecture');
+        assert.ok(orgBlock.includes('Central Wiki Hub'), 'Must include guild TOC');
+        assert.ok(orgBlock.includes('ACTIVE MEMBER FOCUS'), 'Must include active member focus');
+        assert.ok(orgBlock.includes('Himanshu'), 'Must include target member display name');
+        assert.ok(orgBlock.includes('user_456'), 'Must include target member ID');
+    });
+
+    test('getUserQueryBlock encapsulates user question cleanly', () => {
+        const queryBlock = getUserQueryBlock('What is our target client cap?');
+        assert.strictEqual(queryBlock, '[USER QUERY]\nWhat is our target client cap?');
+    });
+
+    test('formatAskPrompt combines organizational context block and user query block', () => {
+        const orgBlock = getOrgContextBlock(testGuildId);
+        const prompt = formatAskPrompt('What is our dilution policy?', orgBlock);
+        assert.ok(prompt.startsWith('[ORGANIZATIONAL CONTEXT]\n'), 'Must start with org context block');
+        assert.ok(prompt.includes('Never dilute more than 5%'), 'Must contain org facts');
+        assert.ok(prompt.includes('[USER QUERY]\nWhat is our dilution policy?'), 'Must contain user query block');
     });
 
     console.log('\n======================================================');

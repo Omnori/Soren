@@ -37,10 +37,13 @@ module.exports = {
         const userId = interaction.user.id;
 
         try {
-            // Run grounded assistant chat
+            // Run grounded assistant chat with base system prompt, org context block, and user query block
             const answer = await runGroundedAssistant(guildId, userId, [
                 { role: 'user', content: question },
-            ]);
+            ], {
+                targetMember: interaction.user,
+                entryPoint: 'ask',
+            });
 
             await sendSafeChunkedReply(interaction, answer, { fileName: 'soren_answer.md' });
         } catch (err) {
