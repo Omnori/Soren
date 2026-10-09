@@ -41,7 +41,7 @@ module.exports = {
             const answer = await runGroundedAssistant(guildId, userId, [
                 { role: 'user', content: question },
             ], {
-                targetMember: interaction.user,
+                targetMember: interaction.member || interaction.user,
                 entryPoint: 'ask',
             });
 

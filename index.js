@@ -159,6 +159,7 @@ client.on(Events.MessageCreate, async (message) => {
             const answer = await runGroundedAssistant(guildId, message.author.id, conversationHistory, {
                 channelId: message.channel.id,
                 entryPoint: 'mention',
+                targetMember: message.member || message.author,
             });
 
             await sendSafeMessageReply(message, answer, { fileName: 'soren_reply.md' });

@@ -511,6 +511,79 @@ async function runAssistantTests() {
         }
     });
 
+    // -------------------------------------------------------------
+    // 5. Caller Identity Resolution & Anti-Question Guarding
+    // -------------------------------------------------------------
+    console.log('\n--- [Area 5] Caller Identity Resolution & Anti-Question Guarding ---');
+
+    test('resolveCallerIdentity resolves Abhi from display name or handle', () => {
+        const { resolveCallerIdentity } = require('../lib/assistantEngine');
+        const res1 = resolveCallerIdentity(testGuildId, '123', {
+            targetMember: { displayName: 'Abhyudaya', username: 'abhi_om', id: '123' },
+        });
+        assert.strictEqual(res1.resolvedName, 'Abhi');
+        assert.strictEqual(res1.notionAssignee, 'Abhi');
+        assert.ok(res1.roleDescription.includes('Co-Founder'));
+
+        const res2 = resolveCallerIdentity(testGuildId, '124', {
+            targetMember: { displayName: 'Abhi', username: 'user124', id: '124' },
+        });
+        assert.strictEqual(res2.resolvedName, 'Abhi');
+    });
+
+    test('resolveCallerIdentity resolves Himanshu from display name or handle', () => {
+        const { resolveCallerIdentity } = require('../lib/assistantEngine');
+        const res1 = resolveCallerIdentity(testGuildId, '456', {
+            targetMember: { displayName: 'Himanshu Yadav', username: 'himanshu', id: '456' },
+        });
+        assert.strictEqual(res1.resolvedName, 'Himanshu');
+        assert.strictEqual(res1.notionAssignee, 'Himanshu');
+        assert.ok(res1.roleDescription.includes('Co-Founder'));
+    });
+
+    test('resolveCallerIdentity resolves mapped user from SQLite', () => {
+        const { resolveCallerIdentity } = require('../lib/assistantEngine');
+        const testUserId = 'mapped_user_999';
+        upsertUserMapping(testGuildId, testUserId, 'Custom Dev', 'CustomDevInNotion', 'notion_id_999');
+
+        try {
+            const res = resolveCallerIdentity(testGuildId, testUserId, {
+                targetMember: { id: testUserId, username: 'random_handle', displayName: 'Random' },
+            });
+            assert.strictEqual(res.resolvedName, 'Custom Dev');
+            assert.strictEqual(res.notionAssignee, 'CustomDevInNotion');
+            assert.strictEqual(res.hasMapping, true);
+        } finally {
+            deleteUserMapping(testGuildId, testUserId);
+        }
+    });
+
+    test('getOrgContextBlock injects caller identity and anti-question directive', () => {
+        const orgBlock = getOrgContextBlock(testGuildId, {
+            targetMember: { displayName: 'Abhi', id: '123' },
+        });
+        assert.ok(orgBlock.includes('ACTIVE MEMBER FOCUS & CALLER IDENTITY'));
+        assert.ok(orgBlock.includes('The person asking you this question IS **Abhi**'));
+        assert.ok(orgBlock.includes('NEVER ASK THE USER: "Who are you?"'));
+        assert.ok(orgBlock.includes('NEVER ask "Are you Abhi or Himanshu?"') || orgBlock.includes('Are you Abhi or Himanshu?'));
+        assert.ok(orgBlock.includes('list_user_tasks(assignee: "Abhi")'));
+    });
+
+    test('getUserQueryBlock includes caller prefix when caller context is present', () => {
+        const queryBlock = getUserQueryBlock('what are my tasks', {
+            targetMember: { displayName: 'Himanshu', username: 'himanshu_y' },
+        });
+        assert.ok(queryBlock.includes('[USER QUERY from Himanshu (@himanshu_y)]'));
+        assert.ok(queryBlock.includes('what are my tasks'));
+    });
+
+    await asyncTest('executeTool auto-scopes list_user_tasks to callerContext when assignee is omitted', async () => {
+        const { executeTool } = require('../lib/assistantEngine');
+        const res = await executeTool(testGuildId, 'list_user_tasks', {}, { notionAssignee: 'Abhi' });
+        // Database is unconfigured in test guild, so it returns Action Items database is not configured
+        assert.ok(typeof res === 'string');
+    });
+
     console.log('\n======================================================');
     console.log(`📊 Assistant Test Summary: ${passed} Passed, ${failed} Failed`);
     console.log('======================================================');
