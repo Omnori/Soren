@@ -1,3 +1,5 @@
+require('dotenv').config();
+process.env.NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || 'mock-nvapi-key';
 const assert = require('node:assert');
 const {
     upsertNotionItem,
@@ -372,6 +374,141 @@ async function runAssistantTests() {
         assert.ok(prompt.startsWith('[ORGANIZATIONAL CONTEXT]\n'), 'Must start with org context block');
         assert.ok(prompt.includes('Never dilute more than 5%'), 'Must contain org facts');
         assert.ok(prompt.includes('[USER QUERY]\nWhat is our dilution policy?'), 'Must contain user query block');
+    });
+
+    // -------------------------------------------------------------
+    // 4. Tool Loop Protection & Resilient Fallback
+    // -------------------------------------------------------------
+    console.log('\n--- [Area 4] Tool Loop Protection & Resilient Fallback ---');
+
+    await asyncTest('executeTool executes get_recent_meetings without requiring Notion token', async () => {
+        const { executeTool } = require('../lib/assistantEngine');
+        const res = await executeTool('unconfigured-guild-id', 'get_recent_meetings', { limit: 2 });
+        assert.ok(typeof res === 'string');
+        const parsed = JSON.parse(res);
+        assert.ok(Array.isArray(parsed.sessions));
+        assert.ok(!res.includes('Notion token is not configured'), 'Should not require Notion token');
+    });
+
+    await asyncTest('executeTool handles null/missing args gracefully', async () => {
+        const { executeTool } = require('../lib/assistantEngine');
+        const res = await executeTool('unconfigured-guild-id', 'search_workspace', null);
+        assert.ok(res.includes('Notion token is not configured'));
+    });
+
+    await asyncTest('runGroundedAssistant detects duplicate tool calls and activates forced synthesis', async () => {
+        const originalFetch = global.fetch;
+        let callCount = 0;
+        const requestedPayloads = [];
+
+        global.fetch = async (url, options) => {
+            callCount++;
+            const body = JSON.parse(options.body);
+            requestedPayloads.push(body);
+
+            // Turn 1: model calls search_workspace
+            if (callCount === 1) {
+                return {
+                    ok: true,
+                    json: async () => ({
+                        choices: [{
+                            message: {
+                                role: 'assistant',
+                                content: null,
+                                tool_calls: [{
+                                    id: 'call_1',
+                                    type: 'function',
+                                    function: { name: 'get_recent_meetings', arguments: JSON.stringify({ limit: 2 }) },
+                                }],
+                            },
+                        }],
+                    }),
+                };
+            }
+
+            // Turn 2: model attempts the EXACT SAME tool call again (duplicate loop)
+            if (callCount === 2) {
+                return {
+                    ok: true,
+                    json: async () => ({
+                        choices: [{
+                            message: {
+                                role: 'assistant',
+                                content: null,
+                                tool_calls: [{
+                                    id: 'call_2',
+                                    type: 'function',
+                                    function: { name: 'get_recent_meetings', arguments: JSON.stringify({ limit: 2 }) },
+                                }],
+                            },
+                        }],
+                    }),
+                };
+            }
+
+            // Turn 3: forced synthesis turn - model generates text
+            return {
+                ok: true,
+                json: async () => ({
+                    choices: [{
+                        message: {
+                            role: 'assistant',
+                            content: 'Based on recent sessions, the team reviewed onboarding roadmap.',
+                        },
+                    }],
+                }),
+            };
+        };
+
+        try {
+            const answer = await runGroundedAssistant('test-guild-assistant-123', 'user_1', 'What happened in meetings?', {
+                provider: 'nvidia',
+            });
+            assert.ok(answer.includes('onboarding roadmap'), 'Should return final synthesized text');
+            // Verify turn 3 was forced synthesis with tool_choice: 'none'
+            assert.ok(requestedPayloads.length >= 3, 'Should execute 3 turns');
+            assert.strictEqual(requestedPayloads[2].tool_choice, 'none', 'Turn 3 must force tool_choice: none after duplicate detected');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    await asyncTest('runGroundedAssistant gracefully falls back without throwing when loop cap is reached', async () => {
+        const originalFetch = global.fetch;
+        let callCount = 0;
+
+        // Mock fetch that always returns empty text and endless distinct tool calls
+        global.fetch = async (url, options) => {
+            callCount++;
+            return {
+                ok: true,
+                json: async () => ({
+                    choices: [{
+                        message: {
+                            role: 'assistant',
+                            content: null,
+                            tool_calls: [{
+                                id: `call_${callCount}`,
+                                type: 'function',
+                                function: { name: 'get_recent_meetings', arguments: JSON.stringify({ limit: callCount }) },
+                            }],
+                        },
+                    }],
+                }),
+            };
+        };
+
+        try {
+            const answer = await runGroundedAssistant('test-guild-assistant-123', 'user_1', 'What happened in meetings?', {
+                provider: 'nvidia',
+            });
+            assert.ok(typeof answer === 'string', 'Must return a string answer');
+            assert.ok(answer.length > 0, 'Answer must not be empty');
+            assert.ok(!answer.includes('exceeded maximum iterations'), 'Must NEVER throw loop protection exception');
+            assert.ok(callCount <= 6, `Total calls (${callCount}) must be bounded by MAX_TOOL_LOOPS`);
+        } finally {
+            global.fetch = originalFetch;
+        }
     });
 
     console.log('\n======================================================');
