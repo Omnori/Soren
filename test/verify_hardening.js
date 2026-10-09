@@ -1464,8 +1464,9 @@ Architecture review and sprint sync.
     console.log(`\n--- [Area 13] Upfront Groq Rate Limit Guarding ---`);
 
     test('checkGroqDailyLimit excludes rate_limited entries and detects limit exhaustion', () => {
-        const { db, checkGroqDailyLimit, logApiRequest, GROQ_LIMITS } = require('../lib/database');
+        const { db, checkGroqDailyLimit, logApiRequest, setGuildKeys, GROQ_LIMITS } = require('../lib/database');
         const testGuild = 'guild_rlimit_test_' + Date.now();
+        setGuildKeys(testGuild, { groqApiKey: 'gsk_mock_test_key_for_rlimit' });
 
         // Initially zero usage -> allowed
         const initial = checkGroqDailyLimit(testGuild);
