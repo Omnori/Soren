@@ -200,7 +200,7 @@ const MAN_PAGES = {
 			'       /notes stats\n' +
 			'       /notes keyinfo\n' +
 			'       /notes setkey [groq_key] [gemini_key] [nvidia_key] [provider] [groq_model] [gemini_model] [nvidia_model]\n' +
-			'       /notes setmodel [groq_model] [gemini_model] [nvidia_model]\n' +
+			'       /notes setmodel [provider] [groq_model] [gemini_model] [nvidia_model]\n' +
 			'       /notes clearkey\n' +
 			'       /notes setnotion token:<token> wiki:<wiki>\n' +
 			'       /notes notioninfo\n' +
@@ -267,11 +267,13 @@ const MAN_PAGES = {
 			},
 			{
 				name: 'setmodel',
-				synopsis: '/notes setmodel [groq_model] [gemini_model] [nvidia_model]',
-				description: '[Admin] Set summary AI model code names without re-entering API keys.',
+				synopsis: '/notes setmodel [provider] [groq_model] [gemini_model] [nvidia_model]',
+				description: '[Admin] Set preferred summary AI provider and model code names without re-entering API keys.',
 				options: [
-					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name' },
-					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name' },
+					{ name: 'provider', type: 'String', required: false, description: 'Preferred summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
+					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name (e.g. openai/gpt-oss-120b)' },
+					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-2.5-flash)' },
+					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)' },
 				],
 			},
 			{

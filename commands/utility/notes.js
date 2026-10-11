@@ -58,7 +58,7 @@ module.exports = {
         .addSubcommand((sub) =>
             sub
                 .setName('setkey')
-                .setDescription('Set Groq / Gemini API key and models for this server (Admins only)')
+                .setDescription('Set Groq / Gemini / NVIDIA API keys and models for this server (Admins only)')
                 .addStringOption((opt) =>
                     opt.setName('groq_key').setDescription('Groq API Key (used for voice STT and Groq summaries)').setRequired(false),
                 )
