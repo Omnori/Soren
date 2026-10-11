@@ -310,157 +310,113 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
     let totalTokens = 0;
     let lastError = null;
 
-    if (provider === 'nvidia' && (nvidiaKey || process.env.NVIDIA_API_KEY)) {
-        try {
-            const res = await summarizeTranscriptWithNvidia(transcriptText, nvidiaKey, nvidiaModel, guildId, effectiveOrgContext);
-            summary = res.summary || res;
-            totalTokens = res.totalTokens || 0;
-            if (guildId) {
-                logApiRequest({
-                    guildId,
-                    service: 'nvidia_summary',
-                    model: nvidiaModel || 'nvidia/nemotron-3-super-120b-a12b',
-                    status: 'success',
-                    tokensUsed: totalTokens,
-                });
+    // Define provider execution order based on preference
+    const preferredProvider = (provider || 'nvidia').toLowerCase();
+    const candidateProviders = [preferredProvider];
+    ['nvidia', 'gemini', 'groq'].forEach((p) => {
+        if (!candidateProviders.includes(p)) candidateProviders.push(p);
+    });
+
+    for (const p of candidateProviders) {
+        if (p === 'nvidia' && (nvidiaKey || process.env.NVIDIA_API_KEY)) {
+            const effectiveNvidiaKey = nvidiaKey || process.env.NVIDIA_API_KEY;
+            const effectiveNvidiaModel = nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
+            try {
+                const res = await summarizeTranscriptWithNvidia(transcriptText, effectiveNvidiaKey, effectiveNvidiaModel, guildId, effectiveOrgContext);
+                summary = res.summary || res;
+                totalTokens = res.totalTokens || 0;
+                if (guildId) {
+                    logApiRequest({
+                        guildId,
+                        service: 'nvidia_summary',
+                        model: effectiveNvidiaModel,
+                        status: 'success',
+                        tokensUsed: totalTokens,
+                    });
+                }
+                break;
+            } catch (error) {
+                lastError = error;
+                console.warn('[notes] NVIDIA summarization failed:', error.message || error);
+                if (guildId) {
+                    logApiRequest({
+                        guildId,
+                        service: 'nvidia_summary',
+                        model: effectiveNvidiaModel,
+                        status: 'error',
+                        errorMessage: error?.message || String(error),
+                    });
+                }
             }
-        } catch (error) {
-            lastError = error;
-            console.warn('[notes] NVIDIA summarization failed, trying fallback:', error);
-            if (guildId) {
-                logApiRequest({
-                    guildId,
-                    service: 'nvidia_summary',
-                    model: nvidiaModel,
-                    status: 'error',
-                    errorMessage: error?.message || String(error),
-                });
+        } else if (p === 'gemini' && (geminiKey || process.env.GEMINI_API_KEY)) {
+            const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
+            let effectiveGeminiModel = geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+            if (effectiveGeminiModel === 'gemini-3.5-flash' || !effectiveGeminiModel.startsWith('gemini-')) {
+                effectiveGeminiModel = 'gemini-2.5-flash';
             }
-            if (groqKey) {
-                try {
-                    const res = await summarizeTranscriptWithGroq(transcriptText, groqKey, groqModel, guildId, effectiveOrgContext);
-                    summary = res.summary || res;
-                    totalTokens = res.totalTokens || 0;
-                } catch (e) {
-                    lastError = e;
+            try {
+                const res = await summarizeTranscript(transcriptText, effectiveGeminiKey, effectiveGeminiModel, effectiveOrgContext);
+                summary = res.summary || res;
+                totalTokens = res.totalTokens || 0;
+                if (guildId) {
+                    logApiRequest({
+                        guildId,
+                        service: 'gemini_summary',
+                        model: effectiveGeminiModel,
+                        status: 'success',
+                        tokensUsed: totalTokens,
+                    });
+                }
+                break;
+            } catch (error) {
+                lastError = error;
+                console.warn('[notes] Gemini summarization failed:', error.message || error);
+                if (guildId) {
+                    const isRateLimit = String(error?.message || '').includes('429');
+                    logApiRequest({
+                        guildId,
+                        service: 'gemini_summary',
+                        model: effectiveGeminiModel,
+                        status: isRateLimit ? 'rate_limited' : 'error',
+                        errorMessage: error?.message || String(error),
+                    });
+                }
+            }
+        } else if (p === 'groq' && (groqKey || process.env.GROQ_API_KEY)) {
+            const effectiveGroqKey = groqKey || process.env.GROQ_API_KEY;
+            const effectiveGroqModel = groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
+            try {
+                const res = await summarizeTranscriptWithGroq(transcriptText, effectiveGroqKey, effectiveGroqModel, guildId, effectiveOrgContext);
+                summary = res.summary || res;
+                totalTokens = res.totalTokens || 0;
+                if (guildId) {
+                    logApiRequest({
+                        guildId,
+                        service: 'groq_summary',
+                        model: effectiveGroqModel,
+                        status: 'success',
+                        tokensUsed: totalTokens,
+                    });
+                }
+                break;
+            } catch (error) {
+                lastError = error;
+                console.warn('[notes] Groq summarization failed:', error.message || error);
+                if (guildId) {
+                    const isRateLimit = String(error?.message || '').includes('429');
+                    logApiRequest({
+                        guildId,
+                        service: 'groq_summary',
+                        model: effectiveGroqModel,
+                        status: isRateLimit ? 'rate_limited' : 'error',
+                        errorMessage: error?.message || String(error),
+                    });
                 }
             }
         }
-    } else if (provider === 'gemini' && geminiKey) {
-        try {
-            const res = await summarizeTranscript(transcriptText, geminiKey, geminiModel, effectiveOrgContext);
-            summary = res.summary || res;
-            totalTokens = res.totalTokens || 0;
-            if (guildId) {
-                logApiRequest({
-                    guildId,
-                    service: 'gemini_summary',
-                    model: geminiModel,
-                    status: 'success',
-                    tokensUsed: totalTokens,
-                });
-            }
-        } catch (error) {
-            lastError = error;
-            console.warn('[notes] Gemini summarization failed, trying Groq fallback:', error);
-            if (guildId) {
-                const isRateLimit = String(error?.message || '').includes('429');
-                logApiRequest({
-                    guildId,
-                    service: 'gemini_summary',
-                    model: geminiModel,
-                    status: isRateLimit ? 'rate_limited' : 'error',
-                    errorMessage: error?.message || String(error),
-                });
-            }
-            if (groqKey) {
-                try {
-                    const res = await summarizeTranscriptWithGroq(transcriptText, groqKey, groqModel, guildId, effectiveOrgContext);
-                    summary = res.summary || res;
-                    totalTokens = res.totalTokens || 0;
-                    if (guildId) {
-                        logApiRequest({
-                            guildId,
-                            service: 'groq_summary',
-                            model: groqModel,
-                            status: 'success',
-                            tokensUsed: totalTokens,
-                        });
-                    }
-                } catch (groqError) {
-                    lastError = groqError;
-                    console.error('All summarization attempts failed:', groqError);
-                    if (guildId) {
-                        const isRateLimit = String(groqError?.message || '').includes('429');
-                        logApiRequest({
-                            guildId,
-                            service: 'groq_summary',
-                            model: groqModel,
-                            status: isRateLimit ? 'rate_limited' : 'error',
-                            errorMessage: groqError?.message || String(groqError),
-                        });
-                    }
-                }
-            }
-        }
-    } else if (groqKey) {
-        try {
-            const res = await summarizeTranscriptWithGroq(transcriptText, groqKey, groqModel, guildId, effectiveOrgContext);
-            summary = res.summary || res;
-            totalTokens = res.totalTokens || 0;
-            if (guildId) {
-                logApiRequest({
-                    guildId,
-                    service: 'groq_summary',
-                    model: groqModel,
-                    status: 'success',
-                    tokensUsed: totalTokens,
-                });
-            }
-        } catch (error) {
-            lastError = error;
-            console.warn('[notes] Groq summarization failed, trying Gemini fallback:', error);
-            if (guildId) {
-                const isRateLimit = String(error?.message || '').includes('429');
-                logApiRequest({
-                    guildId,
-                    service: 'groq_summary',
-                    model: groqModel,
-                    status: isRateLimit ? 'rate_limited' : 'error',
-                    errorMessage: error?.message || String(error),
-                });
-            }
-            if (geminiKey) {
-                try {
-                    const res = await summarizeTranscript(transcriptText, geminiKey, geminiModel, effectiveOrgContext);
-                    summary = res.summary || res;
-                    totalTokens = res.totalTokens || 0;
-                    if (guildId) {
-                        logApiRequest({
-                            guildId,
-                            service: 'gemini_summary',
-                            model: geminiModel,
-                            status: 'success',
-                            tokensUsed: totalTokens,
-                        });
-                    }
-                } catch (geminiError) {
-                    lastError = geminiError;
-                    console.error('All summarization attempts failed:', geminiError);
-                    if (guildId) {
-                        const isRateLimit = String(geminiError?.message || '').includes('429');
-                        logApiRequest({
-                            guildId,
-                            service: 'gemini_summary',
-                            model: geminiModel,
-                            status: isRateLimit ? 'rate_limited' : 'error',
-                            errorMessage: geminiError?.message || String(geminiError),
-                        });
-                    }
-                }
-            }
-        }
-    } else {
+    }
+
+    if (!summary && !lastError) {
         lastError = new Error('No API key configured for summarization.');
     }
 
@@ -555,7 +511,7 @@ async function stopNotes(interaction) {
             participantCount: session.participants.size,
             participants: [...session.participants.values()],
             summaryProvider: provider,
-            summaryModel: provider === 'gemini' ? geminiModel : groqModel,
+            summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
             transcriptEntriesCount: session.transcript.length,
             status: 'failed',
             errorMessage: failureReason,
@@ -570,9 +526,11 @@ async function stopNotes(interaction) {
                 participants: new Map(session.participants),
                 groqApiKey: groqKey,
                 geminiApiKey: geminiKey,
+                nvidiaApiKey: nvidiaKey,
                 summaryProvider: provider,
                 groqModel,
                 geminiModel,
+                nvidiaModel,
             },
             transcriptText,
             createdAt: Date.now(),
@@ -604,7 +562,7 @@ async function stopNotes(interaction) {
         participantCount: session.participants.size,
         participants: [...session.participants.values()],
         summaryProvider: provider,
-        summaryModel: provider === 'gemini' ? geminiModel : groqModel,
+        summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
         transcriptEntriesCount: session.transcript.length,
         status: 'completed',
         summaryText: summary,
@@ -709,17 +667,21 @@ async function handleButton(interaction) {
 
     const groqKey = guildConfig.groqApiKey || sessionInfo.groqApiKey || process.env.GROQ_API_KEY;
     const geminiKey = guildConfig.geminiApiKey || sessionInfo.geminiApiKey || process.env.GEMINI_API_KEY;
-    const provider = guildConfig.summaryProvider || sessionInfo.summaryProvider || process.env.SUMMARY_PROVIDER || 'groq';
+    const nvidiaKey = guildConfig.nvidiaApiKey || sessionInfo.nvidiaApiKey || process.env.NVIDIA_API_KEY;
+    const provider = guildConfig.summaryProvider || sessionInfo.summaryProvider || process.env.SUMMARY_PROVIDER || 'nvidia';
     const groqModel = guildConfig.groqModel || sessionInfo.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
     const geminiModel = guildConfig.geminiModel || sessionInfo.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const nvidiaModel = guildConfig.nvidiaModel || sessionInfo.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
 
     const { summary, lastError } = await summarizeTranscriptContent(transcriptText, {
         guildId,
         groqKey,
         geminiKey,
+        nvidiaKey,
         provider,
         groqModel,
         geminiModel,
+        nvidiaModel,
     });
 
     if (!summary) {
@@ -763,7 +725,7 @@ async function handleButton(interaction) {
         participantCount: sessionInfo.participants?.size || 0,
         participants: sessionInfo.participants ? [...sessionInfo.participants.values()] : [],
         summaryProvider: provider,
-        summaryModel: provider === 'gemini' ? geminiModel : groqModel,
+        summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
         transcriptEntriesCount: transcriptText.split('\n').filter(Boolean).length,
         status: 'completed',
     });

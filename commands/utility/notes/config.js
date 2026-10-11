@@ -79,8 +79,26 @@ async function handleSetKey(interaction) {
         // Automatically set NVIDIA as provider if user sets nvidia_key without other keys
         updatePayload.summaryProvider = 'nvidia';
     }
-    if (groqModel) updatePayload.groqModel = groqModel.trim();
-    if (geminiModel) updatePayload.geminiModel = geminiModel.trim();
+    if (groqModel) {
+        const trimmed = groqModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = trimmed;
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else {
+            updatePayload.groqModel = trimmed;
+        }
+    }
+    if (geminiModel) {
+        const trimmed = geminiModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = trimmed;
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else if (trimmed === 'gemini-3.5-flash') {
+            updatePayload.geminiModel = 'gemini-2.5-flash';
+        } else {
+            updatePayload.geminiModel = trimmed;
+        }
+    }
     if (nvidiaModel) updatePayload.nvidiaModel = nvidiaModel.trim();
 
     setGuildKeys(guildId, updatePayload);
@@ -111,25 +129,58 @@ async function handleSetModel(interaction) {
         return;
     }
 
+    const provider = interaction.options.getString('provider');
     const groqModel = interaction.options.getString('groq_model');
     const geminiModel = interaction.options.getString('gemini_model');
     const nvidiaModel = interaction.options.getString('nvidia_model');
 
-    if (!groqModel && !geminiModel && !nvidiaModel) {
+    if (!provider && !groqModel && !geminiModel && !nvidiaModel) {
         return handleKeyInfo(interaction);
     }
 
     const updatePayload = {};
-    if (groqModel) updatePayload.groqModel = groqModel.trim();
-    if (geminiModel) updatePayload.geminiModel = geminiModel.trim();
+    if (provider) {
+        updatePayload.summaryProvider = provider.toLowerCase().trim();
+    }
+
+    if (groqModel) {
+        const trimmed = groqModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = trimmed;
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else {
+            updatePayload.groqModel = trimmed;
+        }
+    }
+
+    if (geminiModel) {
+        const trimmed = geminiModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = trimmed;
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else if (trimmed === 'gemini-3.5-flash') {
+            updatePayload.geminiModel = 'gemini-2.5-flash';
+        } else {
+            updatePayload.geminiModel = trimmed;
+        }
+    }
+
+    if (nvidiaModel) {
+        updatePayload.nvidiaModel = nvidiaModel.trim();
+        if (!provider) {
+            updatePayload.summaryProvider = 'nvidia';
+        }
+    }
 
     setGuildKeys(guildId, updatePayload);
 
     const config = getGuildConfig(guildId);
     await interaction.reply({
-        content: `**Models updated for ${interaction.guild.name}!**\n` +
+        content: `**Configuration updated for ${interaction.guild.name}!**\n` +
+            `- **Summary Provider:** **${config.summaryProvider || 'groq'}**\n` +
             `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b'}\`\n` +
-            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\``,
+            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\`\n` +
+            `- **NVIDIA Summary Model:** \`${config.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b'}\``,
         flags: MessageFlags.Ephemeral,
     });
 }
@@ -160,9 +211,11 @@ async function handleKeyInfo(interaction) {
         content: `**Configuration for ${interaction.guild.name}:**\n` +
             `- **Groq API Key:** ${mask(config.groqApiKey)}\n` +
             `- **Gemini API Key:** ${mask(config.geminiApiKey)}\n` +
+            `- **NVIDIA API Key:** ${mask(config.nvidiaApiKey || process.env.NVIDIA_API_KEY)}\n` +
             `- **Summary Provider:** **${config.summaryProvider || 'groq'}**\n` +
             `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b'}\`\n` +
-            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\``,
+            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\`\n` +
+            `- **NVIDIA Summary Model:** \`${config.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b'}\``,
         flags: MessageFlags.Ephemeral,
     });
 }
