@@ -167,7 +167,7 @@ client.on(Events.MessageCreate, async (message) => {
     // Check if Notion integration is set up
     if (!config.notionToken || !config.wikiPageId) {
         if (isMention) {
-            return message.reply('Notion Integration is not configured for this server. Run `/notion setup` first.');
+            return message.reply('My Notion brain isn\'t plugged in yet! Ask an admin to run `/notion setup` so I have something smarter than guesswork to go on.');
         }
         return;
     }
@@ -178,7 +178,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!cleanMessage) {
         if (isMention) {
-            return message.reply('Yes? How can I help you? Ask me about tasks, meetings, clients, or company docs — e.g. `@Soren what are my open tasks?`');
+            return message.reply('Yes, you summoned me? Ask about your tasks, meetings, or company docs — I promise not to invent anything. Usually.');
         }
         return;
     }
@@ -203,7 +203,7 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
         console.error('[messageCreateEvent] Grounded assistant mention error:', err);
         const safeErr = sanitizeErrorMessage(err);
-        await message.reply(`Sorry, I encountered an error: ${safeErr}`).catch(() => {});
+        await message.reply(`Well, my circuits hit a speed bump: ${safeErr}`).catch(() => {});
     }
 });
 

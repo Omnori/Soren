@@ -4,13 +4,13 @@ const { joinVoiceChannel, VoiceConnectionStatus, entersState } = require('@disco
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('join')
-        .setDescription('Joins the voice channel you are currently in'),
+        .setDescription('Summon Soren into your current voice channel'),
     async execute(interaction) {
         const voiceChannel = interaction.member.voice.channel;
 
         if (!voiceChannel) {
             await interaction.reply({
-                content: 'You need to be in a voice channel for me to join!',
+                content: 'Hop into a voice channel first — I can\'t crash an empty room by myself!',
                 flags: MessageFlags.Ephemeral,
             });
             return;
@@ -26,10 +26,10 @@ module.exports = {
 
         try {
             await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-            await interaction.editReply(`Joined **${voiceChannel.name}**!`);
+            await interaction.editReply(`🎧 Dropped into **${voiceChannel.name}**! *(Psst: run \`/notes start\` if you actually want me taking meeting notes.)*`);
         } catch {
             connection.destroy();
-            await interaction.editReply(`Failed to join **${voiceChannel.name}**: connection timed out or failed.`);
+            await interaction.editReply(`Couldn't make it into **${voiceChannel.name}**: connection timed out or failed.`);
         }
     },
 };

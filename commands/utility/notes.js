@@ -23,7 +23,7 @@ const { handleNotice } = require('./notes/notice');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('notes')
-        .setDescription('Voice-channel note taking (Powered by Groq & Gemini)')
+        .setDescription('Voice meeting notes, multi-provider AI summaries (NVIDIA/Gemini/Groq) & Notion sync')
         .addSubcommand((sub) =>
             sub
                 .setName('start')

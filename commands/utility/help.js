@@ -746,7 +746,7 @@ module.exports = {
 					{ name: 'assistant - Configure live chat channel, memory & workspace pulse', value: 'assistant' },
 					{ name: 'join - Join your current voice channel', value: 'join' },
 					{ name: 'leave - Leave the current voice channel', value: 'leave' },
-					{ name: 'ping - Test bot latency and display user profile', value: 'ping' },
+					{ name: 'ping - Check Soren\'s pulse, latency, uptime & AI setup', value: 'ping' },
 					{ name: 'restart - Restart the bot process (Admin only)', value: 'restart' },
 					{ name: 'help - Display manual pages for bot commands', value: 'help' },
 				)

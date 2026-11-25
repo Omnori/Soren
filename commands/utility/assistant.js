@@ -82,7 +82,7 @@ module.exports = {
         if (sub === 'clear') {
             clearConversationHistory(guildId, interaction.channelId);
             return interaction.reply({
-                content: '🧹 Cleared Soren\'s conversation memory for this channel. Fresh context starts now!',
+                content: '🧹 Short-term memory wiped for this channel. Notion is untouched, and I\'ve officially forgotten that last tangent. Fresh slate!',
                 flags: MessageFlags.Ephemeral,
             });
         }

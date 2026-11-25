@@ -8,13 +8,13 @@ const { sanitizeErrorMessage } = require('../../lib/safeError');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('notion')
-        .setDescription('Configure and manage Notion workspace integration')
+        .setDescription('Connect, index, and manage Soren\'s Notion Central Wiki brain (Admins)')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         // Subcommand: setup
         .addSubcommand((sub) =>
             sub
                 .setName('setup')
-                .setDescription('Configure the Notion API token and Central Wiki Page ID')
+                .setDescription('Link Notion token & Central Wiki page (auto-provisions Meetings, Tasks, Org Info & Members)')
                 .addStringOption((opt) =>
                     opt
                         .setName('token')

@@ -7,7 +7,7 @@ const { sanitizeErrorMessage } = require('../../lib/safeError');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('ask')
-        .setDescription('Ask the grounded company assistant a question about wiki docs, tasks, or policies')
+        .setDescription('Ask Soren anything about your Notion wiki, tasks, meetings, or policies')
         .addStringOption((option) =>
             option
                 .setName('question')

@@ -76,7 +76,7 @@ function buildNotesMarkdown(session, summary) {
 }
 
 function buildDiscordSummaryPreview(session, summary, suffix = '') {
-    const header = `📝 **Voice Notes Ready — ${session.voiceChannelName || 'Voice Meeting'}**`;
+    const header = `📝 **Soren's Meeting Notes — ${session.voiceChannelName || 'Voice Meeting'}**`;
     const body = String(summary || '').trim();
     const maxBodyLen = Math.max(400, 1850 - header.length - suffix.length - 12);
     const previewBody = body.length > maxBodyLen ? `${body.slice(0, maxBodyLen - 3)}...` : body;
@@ -296,7 +296,7 @@ async function startNotes(interaction) {
     const modelName = process.env.GROQ_MODEL || DEFAULT_MODELS.groqStt;
     const activeSummaryModel = getActiveSummaryModel(settings.provider, settings);
     await interaction.editReply(
-        `Joined **${voiceChannel.name}** and started taking notes (${modelName} STT | ${settings.provider.toUpperCase()} \`${activeSummaryModel}\` Summary). Run \`/notes stop\` when done.`,
+        `🎙️ Tuned in to **${voiceChannel.name}** and taking notes (${modelName} STT | ${settings.provider.toUpperCase()} \`${activeSummaryModel}\`). Try not to talk over each other too much — run \`/notes stop\` when done!`,
     );
 }
 
@@ -540,7 +540,7 @@ async function stopNotes(interaction) {
             status: 'empty',
             errorMessage: session.sttErrors?.join('; ') || null,
         });
-        let msg = 'Stopped. No speech was captured, so there are no notes to summarize.';
+        let msg = 'Stopped. Either everyone practiced telepathy or nobody spoke long enough to catch — no notes to summarize.';
         if (session.sttErrors && session.sttErrors.length > 0) {
             const errorList = session.sttErrors.slice(0, 5).map((e) => `- ${truncateDiscordText(e, 120)}`).join('\n');
             const extra = session.sttErrors.length > 5 ? `\n- _...and ${session.sttErrors.length - 5} more STT error(s)._` : '';

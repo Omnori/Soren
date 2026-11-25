@@ -5,13 +5,13 @@ const { getSession } = require('../../lib/notesSessions');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('leave')
-        .setDescription('Leaves the current voice channel'),
+        .setDescription('Dismiss Soren from the current voice channel'),
     async execute(interaction) {
         const guildId = interaction.guildId;
 
         if (getSession(guildId)) {
             await interaction.reply({
-                content: 'A notes session is running. Use `/notes stop` to end it and leave.',
+                content: 'Hold on — I\'m actively taking meeting notes! Use `/notes stop` so we don\'t lose the summary.',
                 flags: MessageFlags.Ephemeral,
             });
             return;
@@ -19,11 +19,11 @@ module.exports = {
 
         const connection = getVoiceConnection(guildId);
         if (!connection) {
-            await interaction.reply({ content: "I'm not in a voice channel.", flags: MessageFlags.Ephemeral });
+            await interaction.reply({ content: 'I\'m not in a voice channel — unless you\'re hearing ghosts.', flags: MessageFlags.Ephemeral });
             return;
         }
 
         connection.destroy();
-        await interaction.reply('Left the voice channel.');
+        await interaction.reply('👋 Clocking out of voice. Catch me in chat anytime!');
     },
 };

@@ -17,8 +17,7 @@ module.exports = {
         }
 
         await interaction.reply(
-            'Restarting now. Note: this exits the process — it only comes back automatically if it\'s ' +
-            'run under a process manager that restarts on exit (e.g. pm2, systemd, Docker restart policy).',
+            '🔄 Rebooting my brain cells... Back in a few seconds (assuming PM2 or Docker catches me on the way down).',
         );
         setTimeout(() => process.exit(0), 500);
     },
