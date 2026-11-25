@@ -5,6 +5,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, MessageFlags } = require('discord.js');
 const { sanitizeErrorMessage } = require('./lib/safeError');
+const { pruneOldConversationHistory } = require('./lib/database');
+const {
+    runAndPersistAssistantTurn,
+    handleAssistantButton,
+    hasAdminPermission,
+    runScheduledDigests,
+} = require('./lib/assistantDiscord');
 let token = process.env.DISCORD_TOKEN;
 if (!token) {
     try {
@@ -31,6 +38,15 @@ const client = new Client({
 
 client.once(Events.ClientReady, (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
+    // Prune expired conversation memory & check proactive daily digests hourly
+    const runMaintenance = () => {
+        pruneOldConversationHistory();
+        runScheduledDigests(readyClient).catch((err) => {
+            console.warn('[digest] Scheduled digest loop error:', err.message);
+        });
+    };
+    setTimeout(runMaintenance, 15_000).unref();
+    setInterval(runMaintenance, 60 * 60 * 1000).unref();
 });
 
 // Log in to Discord with your client's token
@@ -96,11 +112,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
                     }
                 }
             }
+            return;
+        }
+
+        if (
+            interaction.customId.startsWith('confirm_action:') ||
+            interaction.customId.startsWith('cancel_action:') ||
+            interaction.customId.startsWith('task_done:')
+        ) {
+            try {
+                await handleAssistantButton(interaction);
+            } catch (error) {
+                console.error('[ButtonError:assistant]', error);
+                const errorDetail = sanitizeErrorMessage(error);
+                const userMessage = `**Action error:** ${errorDetail}`.slice(0, 1950);
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.followUp({ content: userMessage, flags: MessageFlags.Ephemeral }).catch(() => {});
+                } else {
+                    await interaction.reply({ content: userMessage, flags: MessageFlags.Ephemeral }).catch(() => {});
+                }
+            }
         }
     }
 });
 
-const { runGroundedAssistant } = require('./lib/assistantEngine');
 const { sendSafeMessageReply } = require('./lib/discordUtils');
 const { getGuildConfig } = require('./lib/guildConfig');
 
@@ -108,65 +143,67 @@ client.on(Events.MessageCreate, async (message) => {
     // Ignore bot messages or direct messages
     if (message.author.bot || !message.guildId) return;
 
-    // Check if the bot was mentioned
-    if (message.mentions.has(client.user.id)) {
-        const guildId = message.guildId;
-        const config = getGuildConfig(guildId);
+    const guildId = message.guildId;
+    const config = getGuildConfig(guildId);
+    const isMention = message.mentions.has(client.user.id);
+    const isAssistantChannel = Boolean(config.assistantChannelId && message.channelId === config.assistantChannelId);
+    const isAssistantThread = Boolean(
+        message.channel?.isThread?.() && (
+            message.channel.ownerId === client.user.id ||
+            (config.assistantChannelId && message.channel.parentId === config.assistantChannelId)
+        )
+    );
 
-        // Check if Notion integration is set up
-        if (!config.notionToken || !config.wikiPageId) {
+    if (!isMention && !isAssistantChannel && !isAssistantThread) return;
+
+    // In passive channels, ignore slash/bang/comment prefixes so users can still have side notes
+    if (!isMention && /^[!/#]/.test((message.content || '').trim())) return;
+
+    // Ignore replies explicitly directed at another non-bot user unless @Soren was mentioned
+    if (!isMention && message.reference?.messageId && message.mentions.repliedUser && message.mentions.repliedUser.id !== client.user.id) {
+        return;
+    }
+
+    // Check if Notion integration is set up
+    if (!config.notionToken || !config.wikiPageId) {
+        if (isMention) {
             return message.reply('Notion Integration is not configured for this server. Run `/notion setup` first.');
         }
+        return;
+    }
 
-        // Clean the message content to remove the bot mention
-        const mentionRegex = new RegExp(`<@!?${client.user.id}>`, 'g');
-        const cleanMessage = message.content.replace(mentionRegex, '').trim();
+    // Clean the message content to remove the bot mention
+    const mentionRegex = new RegExp(`<@!?${client.user.id}>`, 'g');
+    const cleanMessage = (message.content || '').replace(mentionRegex, '').trim();
 
-        if (!cleanMessage) {
-            return message.reply('Yes? How can I help you? Ask me a question about the server wiki, e.g., "@Soren what is our PTO policy?".');
+    if (!cleanMessage) {
+        if (isMention) {
+            return message.reply('Yes? How can I help you? Ask me about tasks, meetings, clients, or company docs — e.g. `@Soren what are my open tasks?`');
         }
+        return;
+    }
 
-        try {
-            // Trigger typing indicator
-            await message.channel.sendTyping();
+    try {
+        await message.channel.sendTyping().catch(() => {});
 
-            // Build conversation history for thread / channel memory (up to 6 recent messages)
-            let conversationHistory = [];
-            try {
-                const fetched = await message.channel.messages.fetch({ limit: 6 });
-                const sorted = Array.from(fetched.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-                for (const m of sorted) {
-                    if (!m.content) continue;
-                    const isBot = m.author.id === client.user.id;
-                    const mentionPattern = new RegExp(`<@!?${client.user.id}>`, 'g');
-                    const cleanText = m.content.replace(mentionPattern, '').trim();
-                    if (!cleanText) continue;
-                    conversationHistory.push({
-                        role: isBot ? 'assistant' : 'user',
-                        content: cleanText,
-                        name: m.author.username,
-                    });
-                }
-            } catch {
-                conversationHistory = [{ role: 'user', content: cleanMessage }];
-            }
+        const result = await runAndPersistAssistantTurn({
+            guildId,
+            channelId: message.channel.id,
+            userId: message.author.id,
+            targetMember: message.member || message.author,
+            userMessage: cleanMessage,
+            isAdmin: hasAdminPermission(message),
+            entryPoint: isAssistantChannel ? 'assistant_channel' : 'mention',
+        });
 
-            if (conversationHistory.length === 0) {
-                conversationHistory = [{ role: 'user', content: cleanMessage }];
-            }
-
-            // Run grounded assistant chat
-            const answer = await runGroundedAssistant(guildId, message.author.id, conversationHistory, {
-                channelId: message.channel.id,
-                entryPoint: 'mention',
-                targetMember: message.member || message.author,
-            });
-
-            await sendSafeMessageReply(message, answer, { fileName: 'soren_reply.md' });
-        } catch (err) {
-            console.error('[messageCreateEvent] Grounded assistant mention error:', err);
-            await message.reply(`Sorry, I encountered an error: ${err.message}`);
-        }
+        await sendSafeMessageReply(message, result.answer, {
+            fileName: 'soren_reply.md',
+            components: result.components,
+        });
+    } catch (err) {
+        console.error('[messageCreateEvent] Grounded assistant mention error:', err);
+        const safeErr = sanitizeErrorMessage(err);
+        await message.reply(`Sorry, I encountered an error: ${safeErr}`).catch(() => {});
     }
 });
 

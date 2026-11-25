@@ -584,6 +584,256 @@ async function runAssistantTests() {
         assert.ok(typeof res === 'string');
     });
 
+    // -------------------------------------------------------------
+    // 6. Alive Chatbot Upgrades: Memory, Notion v5, RBAC, Confirm & Fallback
+    // -------------------------------------------------------------
+    console.log('\n--- [Area 6] Chatbot Memory, Notion v5, RBAC, Confirmations & Fallback ---');
+
+    test('Conversation memory appends, retrieves within TTL, and clears cleanly', () => {
+        const { appendConversationTurn, getConversationHistory, clearConversationHistory } = require('../lib/database');
+        const convGuild = 'conv_guild_' + Date.now();
+        const convChan = 'conv_chan_1';
+
+        appendConversationTurn(convGuild, convChan, { userId: 'u1', role: 'user', authorName: 'Abhi', content: 'List my tasks' });
+        appendConversationTurn(convGuild, convChan, { userId: 'soren', role: 'assistant', authorName: 'Soren', content: 'You have 2 open tasks.' });
+
+        const hist = getConversationHistory(convGuild, convChan, { limit: 6 });
+        assert.strictEqual(hist.length, 2);
+        assert.strictEqual(hist[0].role, 'user');
+        assert.strictEqual(hist[1].role, 'assistant');
+
+        // Expired TTL returns empty
+        const expired = getConversationHistory(convGuild, convChan, { ttlMs: -1 });
+        assert.strictEqual(expired.length, 0);
+
+        clearConversationHistory(convGuild, convChan);
+        assert.strictEqual(getConversationHistory(convGuild, convChan).length, 0);
+    });
+
+    test('searchNotionItems falls back to OR/LIKE matching for natural multi-word queries', () => {
+        upsertNotionItem({
+            id: 'recall_item_1',
+            guildId: testGuildId,
+            type: 'page',
+            title: 'Agency Deposit Policy',
+            contentMarkdown: 'Require 30% advance deposit before starting client work.',
+            updatedAt: Date.now(),
+        });
+
+        try {
+            const results = searchNotionItems(testGuildId, 'deposit rule guidelines');
+            assert.ok(results.some((r) => r.id === 'recall_item_1'), 'Should match partial words via OR/LIKE recall fallback');
+        } finally {
+            deleteNotionItem('recall_item_1');
+        }
+    });
+
+    await asyncTest('scanNotionWiki supports Notion SDK v5 dataSources.query pagination and prunes stale items', async () => {
+        upsertNotionItem({
+            id: 'stale_deleted_page',
+            guildId: testGuildId,
+            type: 'page',
+            title: 'Old Deleted Page',
+            contentMarkdown: 'Should be pruned',
+            updatedAt: Date.now(),
+        });
+
+        const v5Client = {
+            blocks: {
+                retrieve: async ({ block_id }) => {
+                    if (block_id === 'root_v5') return { id: 'root_v5', type: 'child_page', child_page: { title: 'V5 Root' } };
+                    if (block_id === 'db_v5') return { id: 'db_v5', type: 'child_database', child_database: { title: 'Tasks DB' } };
+                    throw new Error('Not found');
+                },
+                children: {
+                    list: async ({ block_id }) => {
+                        if (block_id === 'root_v5') {
+                            return { results: [{ id: 'db_v5', type: 'child_database', child_database: { title: 'Tasks DB' } }], has_more: false };
+                        }
+                        return { results: [], has_more: false };
+                    },
+                },
+            },
+            databases: {
+                retrieve: async () => ({ data_sources: [{ id: 'ds_v5' }] }),
+            },
+            dataSources: {
+                query: async ({ start_cursor }) => {
+                    if (!start_cursor) {
+                        return {
+                            results: [{ id: 'row_v5_1', url: 'https://notion.so/row_v5_1', properties: { Task: { type: 'title', title: [{ plain_text: 'Task One' }] } } }],
+                            has_more: true,
+                            next_cursor: 'page_2',
+                        };
+                    }
+                    return {
+                        results: [{ id: 'row_v5_2', url: 'https://notion.so/row_v5_2', properties: { Task: { type: 'title', title: [{ plain_text: 'Task Two' }] } } }],
+                        has_more: false,
+                    };
+                },
+            },
+        };
+
+        try {
+            const scanRes = await scanNotionWiki(testGuildId, 'mock-token', 'root_v5', {
+                maxDepth: 2,
+                maxItems: 20,
+                notionClient: v5Client,
+            });
+            assert.ok(scanRes.success);
+            assert.ok(getNotionItem('row_v5_1'), 'First paginated row should be cached');
+            assert.ok(getNotionItem('row_v5_2'), 'Second paginated row should be cached');
+            assert.strictEqual(getNotionItem('stale_deleted_page'), undefined, 'Stale deleted page must be pruned');
+        } finally {
+            deleteNotionItem('root_v5');
+            deleteNotionItem('db_v5');
+            deleteNotionItem('row_v5_1');
+            deleteNotionItem('row_v5_2');
+            deleteNotionItem('stale_deleted_page');
+        }
+    });
+
+    test('TOOL_DEFINITIONS registers update_org_info, append_member_note, and delete_user_task', () => {
+        const { TOOL_DEFINITIONS } = require('../lib/assistantEngine');
+        const names = TOOL_DEFINITIONS.map((t) => t.function.name);
+        assert.ok(names.includes('update_org_info'));
+        assert.ok(names.includes('append_member_note'));
+        assert.ok(names.includes('delete_user_task'));
+    });
+
+    await asyncTest('executeTool enforces RBAC, queues interactive confirmation, and executes on confirm', async () => {
+        const { executeTool, executePendingConfirmation } = require('../lib/assistantEngine');
+        const { setGuildNotionConfig, clearGuildNotionConfig } = require('../lib/database');
+        const rbacGuild = 'rbac_guild_' + Date.now();
+        let archivedPageId = null;
+
+        setGuildNotionConfig(rbacGuild, {
+            notionToken: 'ntn_rbac_mock',
+            wikiPageId: 'wiki_rbac',
+            actionItemsDbId: 'db_tasks_rbac',
+        });
+
+        const originalGetClient = require('../lib/notion').getNotionClient;
+        require('../lib/notion').getNotionClient = () => ({
+            pages: {
+                update: async ({ page_id, archived }) => {
+                    if (archived) archivedPageId = page_id;
+                    return {};
+                },
+            },
+        });
+
+        try {
+            const denied = await executeTool(rbacGuild, 'delete_page', { page_id: 'page123' }, {
+                userId: 'user_nonadmin',
+                isAdmin: false,
+            });
+            assert.ok(denied.includes('Permission Denied'));
+            assert.strictEqual(archivedPageId, null);
+
+            const queuedRaw = await executeTool(rbacGuild, 'delete_page', { page_id: 'page123' }, {
+                userId: 'user_admin',
+                isAdmin: true,
+                interactiveConfirm: true,
+            });
+            const queued = JSON.parse(queuedRaw);
+            assert.strictEqual(queued.requires_confirmation, true);
+            assert.ok(queued.confirmId);
+            assert.strictEqual(archivedPageId, null, 'Page must not be archived before confirmation click');
+
+            // Wrong user cannot confirm
+            const wrongUser = await executePendingConfirmation(queued.confirmId, 'other_user', rbacGuild);
+            assert.strictEqual(wrongUser.ok, false);
+
+            // Initiating admin confirms -> archives page
+            const confirmed = await executePendingConfirmation(queued.confirmId, 'user_admin', rbacGuild);
+            assert.strictEqual(confirmed.ok, true);
+            assert.strictEqual(archivedPageId, 'page123');
+        } finally {
+            require('../lib/notion').getNotionClient = originalGetClient;
+            clearGuildNotionConfig(rbacGuild);
+        }
+    });
+
+    await asyncTest('runGroundedAssistantWithMeta falls back to secondary provider on primary failure', async () => {
+        const { runGroundedAssistantWithMeta } = require('../lib/assistantEngine');
+        const { setGuildKeys, clearGuildKeys } = require('../lib/database');
+        const fbGuild = 'fb_guild_' + Date.now();
+        setGuildKeys(fbGuild, {
+            summaryProvider: 'nvidia',
+            nvidiaApiKey: 'nvapi-test-1',
+            groqApiKey: 'gsk-test-2',
+        });
+
+        const originalFetch = global.fetch;
+        const hitUrls = [];
+        global.fetch = async (url) => {
+            hitUrls.push(url);
+            if (url.includes('nvidia.com')) {
+                return { ok: false, status: 500, text: async () => 'Upstream error' };
+            }
+            return {
+                ok: true,
+                json: async () => ({
+                    choices: [{ message: { role: 'assistant', content: 'Fallback response succeeded!' } }],
+                    usage: { total_tokens: 42 },
+                }),
+            };
+        };
+
+        try {
+            const res = await runGroundedAssistantWithMeta(fbGuild, 'u_fb', [{ role: 'user', content: 'Hello?' }], {
+                autoRefreshWiki: false,
+            });
+            assert.strictEqual(res.answer, 'Fallback response succeeded!');
+            assert.strictEqual(res.provider, 'groq');
+            assert.ok(hitUrls.some((u) => u.includes('nvidia.com')));
+            assert.ok(hitUrls.some((u) => u.includes('groq.com')));
+        } finally {
+            global.fetch = originalFetch;
+            clearGuildKeys(fbGuild);
+        }
+    });
+
+    test('/assistant command exports subcommands channel, digest, clear, and status', () => {
+        const assistantCmd = require('../commands/utility/assistant');
+        assert.strictEqual(assistantCmd.data.name, 'assistant');
+        const subs = assistantCmd.data.options.map((o) => o.name);
+        assert.deepStrictEqual(subs.sort(), ['channel', 'clear', 'digest', 'status']);
+    });
+
+    await asyncTest('voice retry button recovers raw transcript from SQLite after restart (empty retryCache)', async () => {
+        const { recordSession } = require('../lib/database');
+        const { handleButton, retryCache } = require('../commands/utility/notes/voice');
+        const retryGuild = 'retry_db_guild_' + Date.now();
+
+        const rowId = recordSession({
+            guildId: retryGuild,
+            channelId: 'c1',
+            channelName: 'Standup',
+            startedAt: new Date(),
+            endedAt: new Date(),
+            durationSeconds: 120,
+            participantCount: 1,
+            participants: ['Abhi'],
+            summaryProvider: 'nvidia',
+            summaryModel: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
+            transcriptEntriesCount: 1,
+            status: 'failed',
+            errorMessage: 'timeout',
+            rawTranscript: '[10:00:00] Abhi: Ship the update today.',
+        });
+
+        retryCache.clear();
+        let crossGuildReply = '';
+        await handleButton({
+            customId: `retry_notes:db_${rowId}`,
+            guildId: 'wrong_guild',
+            reply: async (p) => { crossGuildReply = p.content; },
+        });
+        assert.ok(crossGuildReply.includes('Access Denied'));
+    });
+
     console.log('\n======================================================');
     console.log(`📊 Assistant Test Summary: ${passed} Passed, ${failed} Failed`);
     console.log('======================================================');

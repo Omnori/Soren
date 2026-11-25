@@ -25,6 +25,7 @@ const {
     getGuildConfig,
     getNotesChannelId,
     recordSession,
+    getSessionById,
     logApiRequest,
     checkGroqDailyLimit,
 } = require('../../../lib/guildConfig');
@@ -74,6 +75,14 @@ function buildNotesMarkdown(session, summary) {
     ].join('\n');
 }
 
+function buildDiscordSummaryPreview(session, summary, suffix = '') {
+    const header = `📝 **Voice Notes Ready — ${session.voiceChannelName || 'Voice Meeting'}**`;
+    const body = String(summary || '').trim();
+    const maxBodyLen = Math.max(400, 1850 - header.length - suffix.length - 12);
+    const previewBody = body.length > maxBodyLen ? `${body.slice(0, maxBodyLen - 3)}...` : body;
+    return `${header}\n\n${previewBody}${suffix ? `\n${suffix}` : ''}`;
+}
+
 function getActiveSummaryModel(provider, { nvidiaModel, geminiModel, groqModel }) {
     if (provider === 'nvidia') return nvidiaModel;
     if (provider === 'gemini') return geminiModel;
@@ -98,6 +107,7 @@ async function deliverOutput(interaction, guildId, payload) {
         await interaction.editReply({
             content: `${prefix}${safeContent}`,
             files: payload.files,
+            components: payload.components,
         });
     }
 }
@@ -562,7 +572,7 @@ async function stopNotes(interaction) {
     if (!summary) {
         cleanRetryCache();
         const failureReason = sanitizeErrorMessage(lastError) || 'Unknown error occurred during API summarization.';
-        recordSession({
+        const failedRowId = recordSession({
             guildId,
             channelId: session.textChannelId,
             channelName: session.voiceChannelName,
@@ -576,9 +586,12 @@ async function stopNotes(interaction) {
             transcriptEntriesCount: session.transcript.length,
             status: 'failed',
             errorMessage: failureReason,
+            rawTranscript: transcriptText,
         });
 
-        const retryId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        const retryId = failedRowId
+            ? `db_${failedRowId}`
+            : (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
         retryCache.set(retryId, {
             guildId,
             sessionInfo: {
@@ -627,6 +640,7 @@ async function stopNotes(interaction) {
         transcriptEntriesCount: session.transcript.length,
         status: 'completed',
         summaryText: summary,
+        rawTranscript: transcriptText,
     });
 
     const { notesFile, suffix } = await publishAndSyncNotes({
@@ -637,7 +651,7 @@ async function stopNotes(interaction) {
     });
 
     await deliverOutput(interaction, guildId, {
-        content: `Notes are ready:${suffix}`,
+        content: buildDiscordSummaryPreview(session, summary, suffix),
         files: [notesFile],
     });
 }
@@ -645,7 +659,37 @@ async function stopNotes(interaction) {
 async function handleButton(interaction) {
     if (!interaction.customId?.startsWith('retry_notes:')) return;
     const retryId = interaction.customId.slice('retry_notes:'.length);
-    const entry = retryCache.get(retryId);
+    let entry = retryCache.get(retryId);
+    if (!entry && retryId.startsWith('db_')) {
+        const dbSessionId = Number(retryId.slice(3));
+        const sessionRow = Number.isFinite(dbSessionId) ? getSessionById(dbSessionId) : null;
+        if (sessionRow && sessionRow.raw_transcript) {
+            if (sessionRow.guild_id !== interaction.guildId) {
+                await interaction.reply({
+                    content: '⛔ **Access Denied:** You cannot trigger a retry for a session from another server.',
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
+            let participantNames;
+            try {
+                participantNames = JSON.parse(sessionRow.participants || '[]');
+            } catch {
+                participantNames = [];
+            }
+            const participantMap = new Map(participantNames.map((name, idx) => [String(idx), name]));
+            entry = {
+                guildId: sessionRow.guild_id,
+                sessionInfo: {
+                    voiceChannelName: sessionRow.channel_name || 'Voice Meeting',
+                    startedAt: new Date(sessionRow.started_at || Date.now()),
+                    participants: participantMap,
+                    summaryProvider: sessionRow.summary_provider,
+                },
+                transcriptText: sessionRow.raw_transcript,
+            };
+        }
+    }
     if (!entry) {
         await interaction.reply({
             content: 'This retry session has expired or the bot was restarted. Please refer to the raw transcript attached above.',

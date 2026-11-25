@@ -1,7 +1,8 @@
-const { SlashCommandBuilder } = require('discord.js');
-const { runGroundedAssistant } = require('../../lib/assistantEngine');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { runAndPersistAssistantTurn, hasAdminPermission } = require('../../lib/assistantDiscord');
 const { sendSafeChunkedReply } = require('../../lib/discordUtils');
 const { getGuildConfig } = require('../../lib/guildConfig');
+const { sanitizeErrorMessage } = require('../../lib/safeError');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -18,7 +19,7 @@ module.exports = {
         if (!guildId) {
             return interaction.reply({
                 content: 'This command can only be used within a Discord server.',
-                flags: [64], // Ephemeral
+                flags: MessageFlags.Ephemeral,
             });
         }
 
@@ -26,7 +27,7 @@ module.exports = {
         if (!config.notionToken || !config.wikiPageId) {
             return interaction.reply({
                 content: 'Notion Integration has not been fully set up for this server yet.\nAn admin can set it up using `/notion setup`.',
-                flags: [64], // Ephemeral
+                flags: MessageFlags.Ephemeral,
             });
         }
 
@@ -37,19 +38,25 @@ module.exports = {
         const userId = interaction.user.id;
 
         try {
-            // Run grounded assistant chat with base system prompt, org context block, and user query block
-            const answer = await runGroundedAssistant(guildId, userId, [
-                { role: 'user', content: question },
-            ], {
+            const result = await runAndPersistAssistantTurn({
+                guildId,
+                channelId: interaction.channelId,
+                userId,
                 targetMember: interaction.member || interaction.user,
+                userMessage: question,
+                isAdmin: hasAdminPermission(interaction),
                 entryPoint: 'ask',
             });
 
-            await sendSafeChunkedReply(interaction, answer, { fileName: 'soren_answer.md' });
+            await sendSafeChunkedReply(interaction, result.answer, {
+                fileName: 'soren_answer.md',
+                components: result.components,
+            });
         } catch (err) {
             console.error('[askCommand] Error running grounded assistant:', err);
+            const safeErr = sanitizeErrorMessage(err);
             await interaction.editReply({
-                content: `Sorry, I encountered an error while processing your request:\n\`\`\`\n${err.message}\n\`\`\``,
+                content: `Sorry, I encountered an error while processing your request: ${safeErr}`,
             });
         }
     },

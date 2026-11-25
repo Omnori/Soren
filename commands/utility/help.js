@@ -234,7 +234,7 @@ const MAN_PAGES = {
 				description: 'Join caller\'s voice channel and begin live audio capture and transcription.',
 				options: [
 					{ name: 'provider', type: 'String', required: false, description: 'Override summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
-					{ name: 'model', type: 'String', required: false, description: 'Override summary model code name (e.g. gemini-2.5-flash)' },
+					{ name: 'model', type: 'String', required: false, description: 'Override summary model code name (e.g. gemini-3.8-flash)' },
 				],
 			},
 			{
@@ -260,9 +260,9 @@ const MAN_PAGES = {
 					{ name: 'gemini_key', type: 'String', required: false, description: 'Gemini API Key (optional for Gemini summaries)' },
 					{ name: 'provider', type: 'String', required: false, description: 'Preferred summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
 					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name (e.g. openai/gpt-oss-120b)' },
-					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-2.5-flash)' },
+					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-3.8-flash)' },
 					{ name: 'nvidia_key', type: 'String', required: false, description: 'NVIDIA NIM API key (starts with nvapi-)' },
-					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)' },
+					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b)' },
 				],
 			},
 			{
@@ -272,8 +272,8 @@ const MAN_PAGES = {
 				options: [
 					{ name: 'provider', type: 'String', required: false, description: 'Preferred summary AI provider (\'groq\', \'gemini\', or \'nvidia\')' },
 					{ name: 'groq_model', type: 'String', required: false, description: 'Groq model code name (e.g. openai/gpt-oss-120b)' },
-					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-2.5-flash)' },
-					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)' },
+					{ name: 'gemini_model', type: 'String', required: false, description: 'Gemini model code name (e.g. gemini-3.8-flash)' },
+					{ name: 'nvidia_model', type: 'String', required: false, description: 'NVIDIA model code name (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b)' },
 				],
 			},
 			{
@@ -375,7 +375,7 @@ const MAN_PAGES = {
 		],
 		examples: [
 			{ command: '/notes start', comment: 'Start recording current voice meeting' },
-			{ command: '/notes start provider:gemini model:gemini-2.5-flash', comment: 'Record with Gemini summary' },
+			{ command: '/notes start provider:gemini model:gemini-3.8-flash', comment: 'Record with Gemini summary' },
 			{ command: '/notes stop', comment: 'End meeting and publish notes & Notion sync' },
 			{ command: '/notes channel channel:#meeting-notes', comment: 'Designate notes channel' },
 			{ command: '/notes createhub name:Acme Corp', comment: 'Build executive Notion Central Wiki' },
@@ -425,6 +425,52 @@ const MAN_PAGES = {
 		],
 		seeAlso: ['notes(1)', 'notion(8)', 'ask(1)', 'ping(1)'],
 	},
+
+	assistant: {
+		name: 'assistant',
+		section: 1,
+		title: 'ASSISTANT',
+		summary: 'Configure dedicated live chat channel, daily workspace pulse digest, memory, and status',
+		synopsis: '/assistant <channel|digest|clear|status>',
+		description:
+			'Manages Soren\'s live conversational assistant experience: designate an always-on\n' +
+			'chat channel (no @Soren required), schedule or trigger daily workspace digests,\n' +
+			'clear conversation memory in the current channel, or check live provider health.',
+		subcommands: [
+			{
+				name: 'channel',
+				synopsis: '/assistant channel [channel:<channel>] [disable:<bool>]',
+				description: '[Admin] Set or disable a dedicated channel where Soren replies naturally without @mention.',
+				options: [],
+			},
+			{
+				name: 'digest',
+				synopsis: '/assistant digest [channel:<channel>] [post_now:<bool>] [disable:<bool>]',
+				description: '[Admin] Configure daily workspace task & meeting digests or post one immediately.',
+				options: [],
+			},
+			{
+				name: 'clear',
+				synopsis: '/assistant clear',
+				description: 'Clear Soren\'s recent conversation memory in the current channel or thread.',
+				options: [],
+			},
+			{
+				name: 'status',
+				synopsis: '/assistant status',
+				description: 'Display live AI provider fallbacks, Notion sync status, and channel settings.',
+				options: [],
+			},
+		],
+		permissions: 'clear & status: Everyone | channel & digest: Manage Server / Admin',
+		prerequisites: 'Notion integration configured via `/notion setup` or `/notes setnotion`.',
+		examples: [
+			{ command: '/assistant channel channel:#ask-soren', comment: 'Enable natural chat without @mentions' },
+			{ command: '/assistant digest post_now:true', comment: 'Post a live workspace pulse summary now' },
+			{ command: '/assistant clear', comment: 'Reset conversation memory in current channel' },
+		],
+		seeAlso: ['ask(1)', 'notion(8)', 'notes(1)'],
+	},
 };
 
 /**
@@ -457,6 +503,7 @@ function formatOverview() {
 		'',
 		'    SECTION 2: KNOWLEDGE BASE & GROUNDED ASSISTANT',
 		'        ask(1)       Query grounded assistant on wiki, docs, tasks & policies',
+		'        assistant(1) Configure live chat channel, memory & daily workspace pulse',
 		'        notion(8)    Configure and manage Notion workspace integration',
 		'',
 		'    SECTION 3: SYSTEM & ADMINISTRATION',
@@ -696,6 +743,7 @@ module.exports = {
 					{ name: 'notes - Voice recording, transcription, AI summaries & sync', value: 'notes' },
 					{ name: 'notion - Configure and manage Notion workspace integration', value: 'notion' },
 					{ name: 'ask - Ask grounded company assistant a question', value: 'ask' },
+					{ name: 'assistant - Configure live chat channel, memory & workspace pulse', value: 'assistant' },
 					{ name: 'join - Join your current voice channel', value: 'join' },
 					{ name: 'leave - Leave the current voice channel', value: 'leave' },
 					{ name: 'ping - Test bot latency and display user profile', value: 'ping' },

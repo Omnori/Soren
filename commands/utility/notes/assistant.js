@@ -1,14 +1,10 @@
 const { MessageFlags, PermissionFlagsBits } = require('discord.js');
 const {
     getGuildConfig,
-    getRecentSessions,
     logAudit,
     getRecentAuditLogs,
 } = require('../../../lib/guildConfig');
-const { fetchOrgInfoContext } = require('../../../lib/orgInfoSync');
-const { runGroundedAssistant } = require('../../../lib/assistantEngine');
-const { handleFollowUpInteraction } = require('../../../lib/memberAssistant');
-const { resolveSummarySettings } = require('../../../lib/aiConfig');
+const { runAndPersistAssistantTurn } = require('../../../lib/assistantDiscord');
 const { sendSafeChunkedReply, sendSafeMessageReply } = require('../../../lib/discordUtils');
 const { sanitizeErrorMessage } = require('../../../lib/safeError');
 const { checkAdminPermission } = require('./helpers');
@@ -57,22 +53,14 @@ async function handleAsk(interaction) {
     await interaction.deferReply();
 
     try {
-        let orgInfoText = '';
-        if (config.notionToken && (config.orgInfoPageId || config.wikiPageId)) {
-            try {
-                orgInfoText = await fetchOrgInfoContext(config.notionToken, config.orgInfoPageId, config.wikiPageId);
-            } catch (err) {
-                console.warn(`[notes:ask] Warning fetching org context:`, err.message);
-            }
-        }
-
-        const recentMeetings = getRecentSessions(guildId, 5);
-        const { provider, groqKey, geminiKey, nvidiaKey, groqModel, geminiModel, nvidiaModel } = resolveSummarySettings(config);
-
-        const answer = await runGroundedAssistant(guildId, interaction.user.id, [
-            { role: 'user', content: question },
-        ], {
+        const isAdmin = checkAdminPermission(interaction);
+        const result = await runAndPersistAssistantTurn({
+            guildId,
+            channelId: interaction.channelId,
+            userId: interaction.user.id,
             targetMember,
+            userMessage: question,
+            isAdmin,
             entryPoint: 'notes_ask',
         });
 
@@ -89,24 +77,17 @@ async function handleAsk(interaction) {
             ? ` *(Target Member: <@${targetMember.id}>)*`
             : '';
 
-        const replyContent = `**Question:** "${question}"${targetNote}\n\n${answer}\n\n` +
-            `*💬 **Conversation Active (2 mins):** Reply in this channel to ask follow-up questions or update tasks/notes (e.g. \`mark task ... as done\` or \`add note: ...\`). Type \`done\` to close.*`;
+        const replyContent = `**Question:** "${question}"${targetNote}\n\n${result.answer}\n\n` +
+            `*💬 **Conversation Active (2 mins):** Reply naturally in this channel for follow-ups (tasks, notes, org updates, or docs). Type \`done\` to close.*`;
 
         await sendSafeChunkedReply(interaction, replyContent, {
             fileName: 'assistant_response.md',
+            components: result.components,
         });
 
-        // Start short-lived 2-minute message collector with frozen authorization context
+        // Start short-lived 2-minute message collector routed through the unified assistant engine
         if (interaction.channel) {
-            const authContext = {
-                guildId,
-                channelId: interaction.channelId,
-                actingUserId: interaction.user.id,
-                targetDiscordUserId: targetMember.id,
-                targetMember,
-                sessionId: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-            };
-
+            const frozenTargetMember = targetMember;
             const collectorKey = `${guildId}:${interaction.user.id}:${interaction.channelId}`;
             if (activeAskCollectors.has(collectorKey)) {
                 try {
@@ -117,7 +98,6 @@ async function handleAsk(interaction) {
                 activeAskCollectors.delete(collectorKey);
             }
 
-            const isAdmin = checkAdminPermission(interaction);
             const filter = (m) => m.author.id === interaction.user.id && !m.author.bot;
             const collector = interaction.channel.createMessageCollector({
                 filter,
@@ -133,30 +113,30 @@ async function handleAsk(interaction) {
 
             collector.on('collect', async (userMsg) => {
                 try {
-                    await userMsg.channel.sendTyping().catch(() => {});
-                    // Strictly pass the frozen targetMember and original callerUser:
-                    // Natural-language follow-ups cannot switch targets or elevate permissions
-                    const followUpRes = await handleFollowUpInteraction({
-                        userMessage: userMsg.content,
-                        callerUser: interaction.user,
-                        targetMember: authContext.targetMember,
-                        guildConfig: config,
-                        recentMeetings,
-                        orgInfoText,
-                        provider,
-                        apiKey: provider === 'gemini' ? geminiKey : (provider === 'nvidia' ? nvidiaKey : groqKey),
-                        model: provider === 'gemini' ? geminiModel : (provider === 'nvidia' ? nvidiaModel : groqModel),
-                        guildId,
-                        isAdmin,
-                    });
-
-                    await sendSafeMessageReply(userMsg, followUpRes.message, {
-                        fileName: 'followup_response.md',
-                    });
-
-                    if (followUpRes.type === 'exit') {
+                    const lower = (userMsg.content || '').trim().toLowerCase();
+                    if (['done', 'stop', 'exit', 'cancel', 'bye', 'close'].includes(lower)) {
+                        await sendSafeMessageReply(userMsg, '👋 Q&A session closed. Mention `@Soren` or run `/ask` anytime!', {
+                            fileName: 'followup_response.md',
+                        });
                         collector.stop('user_exit');
+                        return;
                     }
+
+                    await userMsg.channel.sendTyping().catch(() => {});
+                    const fuRes = await runAndPersistAssistantTurn({
+                        guildId,
+                        channelId: interaction.channelId,
+                        userId: interaction.user.id,
+                        targetMember: frozenTargetMember,
+                        userMessage: userMsg.content,
+                        isAdmin,
+                        entryPoint: 'notes_ask_followup',
+                    });
+
+                    await sendSafeMessageReply(userMsg, fuRes.answer, {
+                        fileName: 'followup_response.md',
+                        components: fuRes.components,
+                    });
                 } catch (fuErr) {
                     console.error('[notes:collector] Error processing follow-up:', fuErr);
                     const safeErr = sanitizeErrorMessage(fuErr);

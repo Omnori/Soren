@@ -1,8 +1,9 @@
-const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const { getGuildConfig, setGuildNotionConfig, upsertUserMapping, getUserMappingsByGuild } = require('../../lib/guildConfig');
-const { getNotionClient, validateWikiPageAccess } = require('../../lib/notion');
+const { getNotionClient, validateWikiPageAccess, provisionWikiStructure } = require('../../lib/notion');
 const { scanNotionWiki } = require('../../lib/notionScanner');
 const { getGuildWiki, getNotionItemsByGuild } = require('../../lib/database');
+const { sanitizeErrorMessage } = require('../../lib/safeError');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -95,27 +96,47 @@ module.exports = {
                     await interaction.deferReply({ flags: [64] }); // Ephemeral defer for security
 
                     // Validate access
+                    let validation;
                     try {
-                        const validation = await validateWikiPageAccess(token, cleanWikiId);
+                        validation = await validateWikiPageAccess(token, cleanWikiId);
                         if (!validation?.valid) {
                             return interaction.editReply({
-                                content: `❌ Could not verify access to the provided Wiki Root Page ID (${validation?.message || 'Access denied'}). Check your Notion Integration Token and ensure your Integration is added to the page.`,
+                                content: `❌ Could not verify access to the provided Wiki Root Page ID (${sanitizeErrorMessage(validation?.message || 'Access denied')}). Check your Notion Integration Token and ensure your Integration is added to the page.`,
                             });
                         }
                     } catch (err) {
                         return interaction.editReply({
-                            content: `❌ Notion Access Verification failed: ${err.message}`,
+                            content: `❌ Notion Access Verification failed: ${sanitizeErrorMessage(err)}`,
                         });
+                    }
+
+                    // Auto-provision or link Meetings, Org Info, Action Items, and Members DBs
+                    let provision = null;
+                    try {
+                        provision = await provisionWikiStructure(token, validation.pageId, {
+                            ...getGuildConfig(guildId),
+                            orgName: interaction.guild?.name,
+                        });
+                    } catch (provErr) {
+                        console.warn(`[notionCommand] Non-fatal provisioning warning:`, provErr.message);
                     }
 
                     // Save config
                     setGuildNotionConfig(guildId, {
                         notionToken: token,
-                        wikiPageId: cleanWikiId,
+                        wikiPageId: validation.pageId,
+                        meetingsDbId: provision?.meetingsDbId,
+                        orgInfoPageId: provision?.orgInfoPageId,
+                        actionItemsDbId: provision?.actionItemsDbId,
+                        membersDbId: provision?.membersDbId,
                     });
 
+                    const provisionSummary = provision
+                        ? `\n- Meetings DB: \`${provision.meetingsDbId}\`\n- Org Info Page: \`${provision.orgInfoPageId}\`\n- Action Items DB: \`${provision.actionItemsDbId}\`\n- Members DB: \`${provision.membersDbId}\``
+                        : '';
+
                     return interaction.editReply({
-                        content: `✅ **Notion Integration Saved successfully!**\n- Wiki Page ID: \`${cleanWikiId}\`\n\nRun \`/notion scan\` to perform your first workspace search index crawl!`,
+                        content: `✅ **Notion Integration Connected & Provisioned!**\n- Wiki Page: **${validation.title || 'Central Wiki'}** (\`${validation.pageId}\`)${provisionSummary}\n\nRun \`/notion scan\` to perform your first workspace search index crawl!`,
                     });
                 }
 
@@ -237,11 +258,12 @@ ${mappings.map((m) => `- <@${m.discord_user_id}> ➡️ **Notion: ${m.notion_use
             }
         } catch (err) {
             console.error('[notionCommand] Error:', err);
+            const safeErr = sanitizeErrorMessage(err);
             return interaction.reply({
-                content: `❌ Error: ${err.message}`,
-                flags: [64],
+                content: `❌ Error: ${safeErr}`,
+                flags: MessageFlags.Ephemeral,
             }).catch(() => {
-                interaction.followUp({ content: `❌ Error: ${err.message}`, flags: [64] });
+                interaction.followUp({ content: `❌ Error: ${safeErr}`, flags: MessageFlags.Ephemeral });
             });
         }
     },
