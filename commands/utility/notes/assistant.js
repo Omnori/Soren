@@ -7,7 +7,8 @@ const {
 } = require('../../../lib/guildConfig');
 const { fetchOrgInfoContext } = require('../../../lib/orgInfoSync');
 const { runGroundedAssistant } = require('../../../lib/assistantEngine');
-const { askGroundedAssistant, handleFollowUpInteraction } = require('../../../lib/memberAssistant');
+const { handleFollowUpInteraction } = require('../../../lib/memberAssistant');
+const { resolveSummarySettings } = require('../../../lib/aiConfig');
 const { sendSafeChunkedReply, sendSafeMessageReply } = require('../../../lib/discordUtils');
 const { sanitizeErrorMessage } = require('../../../lib/safeError');
 const { checkAdminPermission } = require('./helpers');
@@ -66,11 +67,7 @@ async function handleAsk(interaction) {
         }
 
         const recentMeetings = getRecentSessions(guildId, 5);
-        const groqKey = config.groqApiKey || process.env.GROQ_API_KEY;
-        const geminiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
-        const provider = config.summaryProvider || process.env.SUMMARY_PROVIDER || 'groq';
-        const groqModel = config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
-        const geminiModel = config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+        const { provider, groqKey, geminiKey, nvidiaKey, groqModel, geminiModel, nvidiaModel } = resolveSummarySettings(config);
 
         const answer = await runGroundedAssistant(guildId, interaction.user.id, [
             { role: 'user', content: question },
@@ -147,8 +144,8 @@ async function handleAsk(interaction) {
                         recentMeetings,
                         orgInfoText,
                         provider,
-                        apiKey: provider === 'gemini' ? geminiKey : groqKey,
-                        model: provider === 'gemini' ? geminiModel : groqModel,
+                        apiKey: provider === 'gemini' ? geminiKey : (provider === 'nvidia' ? nvidiaKey : groqKey),
+                        model: provider === 'gemini' ? geminiModel : (provider === 'nvidia' ? nvidiaModel : groqModel),
                         guildId,
                         isAdmin,
                     });

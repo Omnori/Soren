@@ -2,7 +2,7 @@ const { MessageFlags, PermissionFlagsBits } = require('discord.js');
 const { getGuildConfig } = require('../../../lib/guildConfig');
 const { getNotionClient } = require('../../../lib/notion');
 const { readNoticeBoard, updateNoticeBoardCallout } = require('../../../lib/noticeBoard');
-const { sanitizeErrorMessage } = require('../../../lib/notion');
+const { sanitizeErrorMessage } = require('../../../lib/safeError');
 
 async function handleNotice(interaction) {
     const guildId = interaction.guildId;

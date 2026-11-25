@@ -26,6 +26,7 @@ module.exports = [
                 fetch: 'readonly',
                 FormData: 'readonly',
                 Blob: 'readonly',
+                AbortSignal: 'readonly',
             },
         },
         rules: {

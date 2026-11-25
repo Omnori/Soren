@@ -8,7 +8,90 @@ const {
     getGuildStats,
     getRecentSessions,
 } = require('../../../lib/guildConfig');
+const { DEFAULT_MODELS, normalizeGeminiModel, normalizeNvidiaModel } = require('../../../lib/aiConfig');
 const { checkAdminPermission } = require('./helpers');
+
+function maskSecret(str) {
+    return str ? `\`${str.slice(0, 4)}...${str.slice(-4)}\`` : '_not set_';
+}
+
+function buildKeyUpdatePayload(interaction, { allowKeys = false } = {}) {
+    const groqKey = allowKeys ? interaction.options.getString('groq_key') : null;
+    const geminiKey = allowKeys ? interaction.options.getString('gemini_key') : null;
+    const nvidiaKey = allowKeys ? interaction.options.getString('nvidia_key') : null;
+    const provider = interaction.options.getString('provider');
+    const groqModel = interaction.options.getString('groq_model');
+    const geminiModel = interaction.options.getString('gemini_model');
+    const nvidiaModel = interaction.options.getString('nvidia_model');
+
+    if (!groqKey && !geminiKey && !nvidiaKey && !provider && !groqModel && !geminiModel && !nvidiaModel) {
+        return null;
+    }
+
+    const updatePayload = {};
+    if (groqKey) updatePayload.groqApiKey = groqKey.trim();
+    if (geminiKey) updatePayload.geminiApiKey = geminiKey.trim();
+    if (nvidiaKey) updatePayload.nvidiaApiKey = nvidiaKey.trim();
+
+    if (provider) {
+        updatePayload.summaryProvider = provider.toLowerCase().trim();
+    } else if (nvidiaKey && !groqKey && !geminiKey) {
+        updatePayload.summaryProvider = 'nvidia';
+    }
+
+    if (groqModel) {
+        const trimmed = groqModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = normalizeNvidiaModel(trimmed);
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else {
+            updatePayload.groqModel = trimmed;
+        }
+    }
+
+    if (geminiModel) {
+        const trimmed = geminiModel.trim();
+        if (trimmed.startsWith('nvidia/')) {
+            updatePayload.nvidiaModel = normalizeNvidiaModel(trimmed);
+            if (!provider) updatePayload.summaryProvider = 'nvidia';
+        } else {
+            updatePayload.geminiModel = normalizeGeminiModel(trimmed);
+        }
+    }
+
+    if (nvidiaModel) {
+        updatePayload.nvidiaModel = normalizeNvidiaModel(nvidiaModel);
+        if (!provider && !allowKeys) {
+            updatePayload.summaryProvider = 'nvidia';
+        }
+    }
+
+    return updatePayload;
+}
+
+function formatGuildConfigSummary(guildName, config, { includeKeys = false, updated = false } = {}) {
+    const header = updated
+        ? `**Configuration updated for ${guildName}!**`
+        : `**Configuration for ${guildName}:**`;
+
+    const lines = [header];
+    if (includeKeys) {
+        lines.push(
+            `- **Groq API Key:** ${maskSecret(config.groqApiKey)}`,
+            `- **Gemini API Key:** ${maskSecret(config.geminiApiKey)}`,
+            `- **NVIDIA API Key:** ${maskSecret(config.nvidiaApiKey || process.env.NVIDIA_API_KEY)}`,
+        );
+    }
+
+    lines.push(
+        `- **Summary Provider:** **${config.summaryProvider || 'nvidia'}**`,
+        `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || DEFAULT_MODELS.groq}\``,
+        `- **Gemini Summary Model:** \`${normalizeGeminiModel(config.geminiModel)}\``,
+        `- **NVIDIA Summary Model:** \`${normalizeNvidiaModel(config.nvidiaModel)}\``,
+    );
+
+    return lines.join('\n');
+}
 
 async function handleChannel(interaction) {
     const guildId = interaction.guildId;
@@ -57,64 +140,16 @@ async function handleSetKey(interaction) {
         return;
     }
 
-    const groqKey = interaction.options.getString('groq_key');
-    const geminiKey = interaction.options.getString('gemini_key');
-    const nvidiaKey = interaction.options.getString('nvidia_key');
-    const provider = interaction.options.getString('provider');
-    const groqModel = interaction.options.getString('groq_model');
-    const geminiModel = interaction.options.getString('gemini_model');
-    const nvidiaModel = interaction.options.getString('nvidia_model');
-
-    if (!groqKey && !geminiKey && !nvidiaKey && !provider && !groqModel && !geminiModel && !nvidiaModel) {
+    const updatePayload = buildKeyUpdatePayload(interaction, { allowKeys: true });
+    if (!updatePayload) {
         return handleKeyInfo(interaction);
     }
 
-    const updatePayload = {};
-    if (groqKey) updatePayload.groqApiKey = groqKey.trim();
-    if (geminiKey) updatePayload.geminiApiKey = geminiKey.trim();
-    if (nvidiaKey) updatePayload.nvidiaApiKey = nvidiaKey.trim();
-    if (provider) {
-        updatePayload.summaryProvider = provider.toLowerCase().trim();
-    } else if (nvidiaKey && !groqKey && !geminiKey) {
-        // Automatically set NVIDIA as provider if user sets nvidia_key without other keys
-        updatePayload.summaryProvider = 'nvidia';
-    }
-    if (groqModel) {
-        const trimmed = groqModel.trim();
-        if (trimmed.startsWith('nvidia/')) {
-            updatePayload.nvidiaModel = trimmed;
-            if (!provider) updatePayload.summaryProvider = 'nvidia';
-        } else {
-            updatePayload.groqModel = trimmed;
-        }
-    }
-    if (geminiModel) {
-        const trimmed = geminiModel.trim();
-        if (trimmed.startsWith('nvidia/')) {
-            updatePayload.nvidiaModel = trimmed;
-            if (!provider) updatePayload.summaryProvider = 'nvidia';
-        } else if (trimmed === 'gemini-3.5-flash') {
-            updatePayload.geminiModel = 'gemini-2.5-flash';
-        } else {
-            updatePayload.geminiModel = trimmed;
-        }
-    }
-    if (nvidiaModel) updatePayload.nvidiaModel = nvidiaModel.trim();
-
     setGuildKeys(guildId, updatePayload);
-
     const config = getGuildConfig(guildId);
-    const mask = (str) => (str ? `\`${str.slice(0, 4)}...${str.slice(-4)}\`` : '_not set_');
 
     await interaction.reply({
-        content: `**Configuration updated for ${interaction.guild.name}!**\n` +
-            `- **Groq API Key:** ${mask(config.groqApiKey)}\n` +
-            `- **Gemini API Key:** ${mask(config.geminiApiKey)}\n` +
-            `- **Summary Provider:** **${config.summaryProvider || 'groq'}**\n` +
-            `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b'}\`\n` +
-            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\`\n` +
-            `- **NVIDIA API Key:** ${mask(config.nvidiaApiKey || process.env.NVIDIA_API_KEY)}\n` +
-            `- **NVIDIA Summary Model:** \`${config.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b'}\``,
+        content: formatGuildConfigSummary(interaction.guild.name, config, { includeKeys: true, updated: true }),
         flags: MessageFlags.Ephemeral,
     });
 }
@@ -129,58 +164,16 @@ async function handleSetModel(interaction) {
         return;
     }
 
-    const provider = interaction.options.getString('provider');
-    const groqModel = interaction.options.getString('groq_model');
-    const geminiModel = interaction.options.getString('gemini_model');
-    const nvidiaModel = interaction.options.getString('nvidia_model');
-
-    if (!provider && !groqModel && !geminiModel && !nvidiaModel) {
+    const updatePayload = buildKeyUpdatePayload(interaction, { allowKeys: false });
+    if (!updatePayload) {
         return handleKeyInfo(interaction);
     }
 
-    const updatePayload = {};
-    if (provider) {
-        updatePayload.summaryProvider = provider.toLowerCase().trim();
-    }
-
-    if (groqModel) {
-        const trimmed = groqModel.trim();
-        if (trimmed.startsWith('nvidia/')) {
-            updatePayload.nvidiaModel = trimmed;
-            if (!provider) updatePayload.summaryProvider = 'nvidia';
-        } else {
-            updatePayload.groqModel = trimmed;
-        }
-    }
-
-    if (geminiModel) {
-        const trimmed = geminiModel.trim();
-        if (trimmed.startsWith('nvidia/')) {
-            updatePayload.nvidiaModel = trimmed;
-            if (!provider) updatePayload.summaryProvider = 'nvidia';
-        } else if (trimmed === 'gemini-3.5-flash') {
-            updatePayload.geminiModel = 'gemini-2.5-flash';
-        } else {
-            updatePayload.geminiModel = trimmed;
-        }
-    }
-
-    if (nvidiaModel) {
-        updatePayload.nvidiaModel = nvidiaModel.trim();
-        if (!provider) {
-            updatePayload.summaryProvider = 'nvidia';
-        }
-    }
-
     setGuildKeys(guildId, updatePayload);
-
     const config = getGuildConfig(guildId);
+
     await interaction.reply({
-        content: `**Configuration updated for ${interaction.guild.name}!**\n` +
-            `- **Summary Provider:** **${config.summaryProvider || 'groq'}**\n` +
-            `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b'}\`\n` +
-            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\`\n` +
-            `- **NVIDIA Summary Model:** \`${config.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b'}\``,
+        content: formatGuildConfigSummary(interaction.guild.name, config, { includeKeys: false, updated: true }),
         flags: MessageFlags.Ephemeral,
     });
 }
@@ -205,17 +198,9 @@ async function handleClearKey(interaction) {
 async function handleKeyInfo(interaction) {
     const guildId = interaction.guildId;
     const config = getGuildConfig(guildId);
-    const mask = (str) => (str ? `\`${str.slice(0, 4)}...${str.slice(-4)}\`` : '_not set_');
 
     await interaction.reply({
-        content: `**Configuration for ${interaction.guild.name}:**\n` +
-            `- **Groq API Key:** ${mask(config.groqApiKey)}\n` +
-            `- **Gemini API Key:** ${mask(config.geminiApiKey)}\n` +
-            `- **NVIDIA API Key:** ${mask(config.nvidiaApiKey || process.env.NVIDIA_API_KEY)}\n` +
-            `- **Summary Provider:** **${config.summaryProvider || 'groq'}**\n` +
-            `- **Groq Summary Model:** \`${config.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b'}\`\n` +
-            `- **Gemini Summary Model:** \`${config.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash'}\`\n` +
-            `- **NVIDIA Summary Model:** \`${config.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b'}\``,
+        content: formatGuildConfigSummary(interaction.guild.name, config, { includeKeys: true, updated: false }),
         flags: MessageFlags.Ephemeral,
     });
 }
@@ -243,10 +228,10 @@ async function handleStats(interaction) {
 
     const embedContent = `📊 **Voice Notes Stats for ${interaction.guild.name}**\n\n` +
         `**Overview:**\n` +
-        `- 🎙️ **Total Recorded Meetings:** \`${stats.total_sessions || 0}\`\n` +
-        `- ⏱️ **Total Time in Voice:** \`${timeFormatted}\`\n` +
-        `- 💬 **Speech Utterances Processed:** \`${stats.total_transcripts || 0}\`\n` +
-        `- 👥 **Total Meeting Attendees:** \`${stats.total_participants || 0}\`\n\n` +
+        `- 🎙️ **Total Recorded Meetings:** \`${stats.total_meetings || 0}\`\n` +
+        `- ✅ **Completed Summaries:** \`${stats.completed_meetings || 0}\`\n` +
+        `- ❌ **Failed Summaries:** \`${stats.failed_meetings || 0}\`\n` +
+        `- ⏱️ **Total Time in Voice:** \`${timeFormatted}\`\n\n` +
         `**Recent Meetings:**\n${recentText}`;
 
     await interaction.reply({

@@ -38,7 +38,7 @@ module.exports = {
                 .addStringOption((opt) =>
                     opt
                         .setName('model')
-                        .setDescription('Override summary model code name (e.g. openai/gpt-oss-120b, gemini-2.5-flash)')
+                        .setDescription('Override summary model code name (e.g. openai/gpt-oss-120b, gemini-3.8-flash)')
                         .setRequired(false),
                 ),
         )
@@ -81,7 +81,7 @@ module.exports = {
                 .addStringOption((opt) =>
                     opt
                         .setName('gemini_model')
-                        .setDescription('Gemini summary model code name (e.g. gemini-2.5-flash, gemini-1.5-pro)')
+                        .setDescription('Gemini summary model code name (e.g. gemini-3.8-flash, gemini-2.5-pro)')
                         .setRequired(false),
                 )
                 .addStringOption((opt) =>
@@ -93,7 +93,7 @@ module.exports = {
                 .addStringOption((opt) =>
                     opt
                         .setName('nvidia_model')
-                        .setDescription('NVIDIA model code name (e.g. nvidia/nemotron-3-super-120b-a12b)')
+                        .setDescription('NVIDIA model code name (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b)')
                         .setRequired(false),
                 ),
         )
@@ -121,13 +121,13 @@ module.exports = {
                 .addStringOption((opt) =>
                     opt
                         .setName('gemini_model')
-                        .setDescription('Gemini summary model code name (e.g. gemini-2.5-flash, gemini-1.5-pro)')
+                        .setDescription('Gemini summary model code name (e.g. gemini-3.8-flash, gemini-2.5-pro)')
                         .setRequired(false),
                 )
                 .addStringOption((opt) =>
                     opt
                         .setName('nvidia_model')
-                        .setDescription('NVIDIA summary model code name (e.g. nvidia/nemotron-3-super-120b-a12b)')
+                        .setDescription('NVIDIA summary model code name (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b)')
                         .setRequired(false),
                 ),
         )

@@ -18,6 +18,7 @@ const { ResilientOpusDecoder } = require('../../../lib/opusDecoder');
 const { createSession, getSession, endSession } = require('../../../lib/notesSessions');
 const { transcribePcm16kMono: transcribeWithGroq, summarizeTranscriptWithGroq, summarizeTranscriptWithNvidia } = require('../../../lib/groqService');
 const { summarizeTranscript } = require('../../../lib/geminiService');
+const { DEFAULT_MODELS, resolveSummarySettings } = require('../../../lib/aiConfig');
 const { fetchOrgInfoContext, syncOrgInfoForGuild } = require('../../../lib/orgInfoSync');
 const { syncMeetingTasksAndPersonalNotes } = require('../../../lib/memberAssistant');
 const {
@@ -31,7 +32,8 @@ const { publishMeetingNotes, getNotionClient } = require('../../../lib/notion');
 const { sanitizeErrorMessage } = require('../../../lib/safeError');
 const { truncateDiscordText } = require('../../../lib/discordUtils');
 
-const MIN_UTTERANCE_BYTES = 16000; // ~0.5s of 16kHz mono 16-bit audio, filters out noise blips
+// ~1.0s of 16kHz mono 16-bit audio; filters short noise blips and cuts Groq STT RPD burn & hallucinations
+const MIN_UTTERANCE_BYTES = 32000;
 const retryCache = new Map();
 const RETRY_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -53,7 +55,7 @@ function buildFilename(session) {
 }
 
 function buildNotesMarkdown(session, summary) {
-    const date = session.startedAt.toLocaleDateString('en-CA'); // YYYY-MM-DD
+    const date = session.startedAt.toLocaleDateString('en-CA');
     const startTime = session.startedAt.toTimeString().slice(0, 8);
     const endTime = new Date().toTimeString().slice(0, 8);
     const participants = [...session.participants.values()];
@@ -70,6 +72,12 @@ function buildNotesMarkdown(session, summary) {
         summary,
         '',
     ].join('\n');
+}
+
+function getActiveSummaryModel(provider, { nvidiaModel, geminiModel, groqModel }) {
+    if (provider === 'nvidia') return nvidiaModel;
+    if (provider === 'gemini') return geminiModel;
+    return groqModel;
 }
 
 async function deliverOutput(interaction, guildId, payload) {
@@ -121,7 +129,7 @@ function captureUserUtterance(receiver, userId, session, guild) {
         const pcm = Buffer.concat(chunks);
         if (pcm.length < MIN_UTTERANCE_BYTES) return;
 
-        const model = process.env.GROQ_MODEL || 'whisper-large-v3-turbo';
+        const model = process.env.GROQ_MODEL || DEFAULT_MODELS.groqStt;
         let text;
         try {
             text = await transcribeWithGroq(pcm, session.groqApiKey, guild.id);
@@ -132,17 +140,17 @@ function captureUserUtterance(receiver, userId, session, guild) {
                 status: 'success',
             });
         } catch (error) {
-            console.error(`[notes:${guild.id}] Groq STT transcription failed:`, error);
-            const isRateLimit = String(error?.message || '').includes('429') || String(error?.message || '').includes('Rate Limit');
+            console.error(`[notes:${guild.id}] Groq STT transcription failed:`, error.message || error);
+            const msg = error?.message || String(error);
+            const isRateLimit = msg.includes('429') || msg.includes('Rate Limit');
             logApiRequest({
                 guildId: guild.id,
                 service: 'groq_stt',
                 model,
                 status: isRateLimit ? 'rate_limited' : 'error',
-                errorMessage: error?.message || String(error),
+                errorMessage: msg,
             });
             if (!session.sttErrors) session.sttErrors = [];
-            const msg = error?.message || String(error);
             if (!session.sttErrors.includes(msg)) {
                 session.sttErrors.push(msg);
             }
@@ -170,7 +178,10 @@ function captureUserUtterance(receiver, userId, session, guild) {
         try {
             await pipeline(opusStream, decoder, resampler);
         } catch (error) {
-            if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+            const msg = String(error?.message || '');
+            if (msg.includes('DecryptionFailed')) {
+                console.warn(`[notes:${guild.id}] Transient voice packet decryption failure for ${userId}: ${msg}`);
+            } else if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
                 console.error(`[notes:${guild.id}] Audio pipeline error for ${userId}:`, error);
             }
         }
@@ -199,7 +210,6 @@ async function startNotes(interaction) {
         return;
     }
 
-    // Check Groq daily limit upfront before connecting to voice
     const dailyCheck = checkGroqDailyLimit(guildId);
     if (!dailyCheck.allowed) {
         await interaction.reply({
@@ -247,19 +257,10 @@ async function startNotes(interaction) {
         return;
     }
 
-    const providerOverride = interaction.options.getString('provider');
-    const modelOverride = interaction.options.getString('model');
-
-    const summaryProvider = providerOverride || guildConfig.summaryProvider || process.env.SUMMARY_PROVIDER || 'nvidia';
-    const groqModel = (summaryProvider === 'groq' && modelOverride)
-        ? modelOverride.trim()
-        : (guildConfig.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b');
-    const geminiModel = (summaryProvider === 'gemini' && modelOverride)
-        ? modelOverride.trim()
-        : (guildConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash');
-    const nvidiaModel = (summaryProvider === 'nvidia' && modelOverride)
-        ? modelOverride.trim()
-        : (guildConfig.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b');
+    const settings = resolveSummarySettings(guildConfig, {
+        provider: interaction.options.getString('provider'),
+        model: interaction.options.getString('model'),
+    });
 
     const session = createSession(guildId, {
         connection,
@@ -268,12 +269,12 @@ async function startNotes(interaction) {
         startedAt: new Date(),
         participants: new Map(),
         groqApiKey: groqKey,
-        geminiApiKey: guildConfig.geminiApiKey || process.env.GEMINI_API_KEY,
-        nvidiaApiKey: guildConfig.nvidiaApiKey || process.env.NVIDIA_API_KEY,
-        summaryProvider,
-        groqModel,
-        geminiModel,
-        nvidiaModel,
+        geminiApiKey: settings.geminiKey,
+        nvidiaApiKey: settings.nvidiaKey,
+        summaryProvider: settings.provider,
+        groqModel: settings.groqModel,
+        geminiModel: settings.geminiModel,
+        nvidiaModel: settings.nvidiaModel,
         sttErrors: [],
     });
 
@@ -282,10 +283,10 @@ async function startNotes(interaction) {
     receiver.speaking.on('start', onSpeakingStart);
     session.onSpeakingStart = onSpeakingStart;
 
-    const modelName = process.env.GROQ_MODEL || 'whisper-large-v3-turbo';
-    const activeSummaryModel = summaryProvider === 'gemini' ? geminiModel : (summaryProvider === 'nvidia' ? nvidiaModel : groqModel);
+    const modelName = process.env.GROQ_MODEL || DEFAULT_MODELS.groqStt;
+    const activeSummaryModel = getActiveSummaryModel(settings.provider, settings);
     await interaction.editReply(
-        `Joined **${voiceChannel.name}** and started taking notes (${modelName} STT | ${summaryProvider.toUpperCase()} \`${activeSummaryModel}\` Summary). Run \`/notes stop\` when done.`,
+        `Joined **${voiceChannel.name}** and started taking notes (${modelName} STT | ${settings.provider.toUpperCase()} \`${activeSummaryModel}\` Summary). Run \`/notes stop\` when done.`,
     );
 }
 
@@ -310,7 +311,6 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
     let totalTokens = 0;
     let lastError = null;
 
-    // Define provider execution order based on preference
     const preferredProvider = (provider || 'nvidia').toLowerCase();
     const candidateProviders = [preferredProvider];
     ['nvidia', 'gemini', 'groq'].forEach((p) => {
@@ -320,7 +320,7 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
     for (const p of candidateProviders) {
         if (p === 'nvidia' && (nvidiaKey || process.env.NVIDIA_API_KEY)) {
             const effectiveNvidiaKey = nvidiaKey || process.env.NVIDIA_API_KEY;
-            const effectiveNvidiaModel = nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
+            const effectiveNvidiaModel = nvidiaModel || process.env.NVIDIA_MODEL || DEFAULT_MODELS.nvidia;
             try {
                 const res = await summarizeTranscriptWithNvidia(transcriptText, effectiveNvidiaKey, effectiveNvidiaModel, guildId, effectiveOrgContext);
                 summary = res.summary || res;
@@ -350,10 +350,7 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
             }
         } else if (p === 'gemini' && (geminiKey || process.env.GEMINI_API_KEY)) {
             const effectiveGeminiKey = geminiKey || process.env.GEMINI_API_KEY;
-            let effectiveGeminiModel = geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-            if (effectiveGeminiModel === 'gemini-3.5-flash' || !effectiveGeminiModel.startsWith('gemini-')) {
-                effectiveGeminiModel = 'gemini-2.5-flash';
-            }
+            const effectiveGeminiModel = geminiModel || process.env.GEMINI_MODEL || DEFAULT_MODELS.gemini;
             try {
                 const res = await summarizeTranscript(transcriptText, effectiveGeminiKey, effectiveGeminiModel, effectiveOrgContext);
                 summary = res.summary || res;
@@ -384,7 +381,7 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
             }
         } else if (p === 'groq' && (groqKey || process.env.GROQ_API_KEY)) {
             const effectiveGroqKey = groqKey || process.env.GROQ_API_KEY;
-            const effectiveGroqModel = groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
+            const effectiveGroqModel = groqModel || process.env.GROQ_SUMMARY_MODEL || DEFAULT_MODELS.groq;
             try {
                 const res = await summarizeTranscriptWithGroq(transcriptText, effectiveGroqKey, effectiveGroqModel, guildId, effectiveOrgContext);
                 summary = res.summary || res;
@@ -423,6 +420,75 @@ async function summarizeTranscriptContent(transcriptText, { guildId, groqKey, ge
     return { summary, totalTokens, lastError };
 }
 
+async function publishAndSyncNotes({ guildId, session, summary, includeOrgSync = true }) {
+    const notesMarkdown = buildNotesMarkdown(session, summary);
+    const notesFile = new AttachmentBuilder(Buffer.from(notesMarkdown, 'utf-8'), { name: buildFilename(session) });
+    const guildConfig = getGuildConfig(guildId);
+
+    let notionOutput = '';
+    if (guildConfig.notionToken && guildConfig.meetingsDbId) {
+        try {
+            const notionRes = await publishMeetingNotes({
+                token: guildConfig.notionToken,
+                meetingsDbId: guildConfig.meetingsDbId,
+                session,
+                markdownContent: notesMarkdown,
+            });
+            if (notionRes.published && notionRes.url) {
+                notionOutput = `\n- **Notion Wiki:** [Open Meeting Page in Notion](${notionRes.url})`;
+            }
+        } catch (err) {
+            console.error(`[notes:${guildId}] Non-fatal failure publishing to Notion:`, err.message);
+        }
+    }
+
+    let orgInfoOutput = '';
+    if (includeOrgSync && guildConfig.notionToken && guildConfig.orgInfoPageId) {
+        if (guildConfig.syncMode === 'automatic') {
+            try {
+                const syncRes = await syncOrgInfoForGuild({
+                    guildId,
+                    meetingNotes: notesMarkdown,
+                    force: true,
+                });
+                if (syncRes.success && syncRes.applied > 0) {
+                    const nbNotice = syncRes.noticeBoardUpdated ? ' & Central Notice Board' : '';
+                    orgInfoOutput = `\n- **Org Info:** 🔄 Auto-synced ${syncRes.applied} facts/decisions to Org Info${nbNotice}.`;
+                }
+            } catch (err) {
+                console.error(`[notes:${guildId}] Org Info auto-sync failed non-fatally:`, err.message);
+            }
+        } else {
+            orgInfoOutput = '\n- **Org Info:** ⏸️ Sync mode is manual. Use `/notes sync` to sync facts into Org Info.';
+        }
+    }
+
+    let taskSyncOutput = '';
+    if (guildConfig.notionToken && (guildConfig.actionItemsDbId || guildConfig.membersDbId)) {
+        try {
+            const client = getNotionClient(guildConfig.notionToken);
+            const taskSyncRes = await syncMeetingTasksAndPersonalNotes({
+                client,
+                actionItemsDbId: guildConfig.actionItemsDbId,
+                membersDbId: guildConfig.membersDbId,
+                meetingNotes: notesMarkdown,
+                participants: session.participants,
+                session,
+            });
+            if (taskSyncRes.tasksCreated > 0 || taskSyncRes.membersUpdated > 0) {
+                taskSyncOutput = `\n- **Tasks & Personal Notes:** 📋 Synced ${taskSyncRes.tasksCreated} action item(s) to Action Items DB and updated ${taskSyncRes.membersUpdated} member page(s).`;
+            }
+        } catch (err) {
+            console.error(`[notes:${guildId}] Non-fatal error syncing meeting tasks to personal notes:`, err.message);
+        }
+    }
+
+    return {
+        notesFile,
+        suffix: `${notionOutput}${orgInfoOutput}${taskSyncOutput}`,
+    };
+}
+
 async function stopNotes(interaction) {
     const guildId = interaction.guildId;
     const session = getSession(guildId);
@@ -459,7 +525,7 @@ async function stopNotes(interaction) {
             participantCount: session.participants.size,
             participants: [...session.participants.values()],
             summaryProvider: session.summaryProvider,
-            summaryModel: session.summaryProvider === 'gemini' ? session.geminiModel : session.groqModel,
+            summaryModel: getActiveSummaryModel(session.summaryProvider, session),
             transcriptEntriesCount: 0,
             status: 'empty',
             errorMessage: session.sttErrors?.join('; ') || null,
@@ -479,23 +545,18 @@ async function stopNotes(interaction) {
         .map((entry) => `[${formatTimestamp(entry.timestamp)}] ${entry.speaker}: ${entry.text}`)
         .join('\n');
 
-    const groqKey = session.groqApiKey;
-    const geminiKey = session.geminiApiKey;
-    const nvidiaKey = session.nvidiaApiKey;
     const provider = session.summaryProvider || 'nvidia';
-    const groqModel = session.groqModel;
-    const geminiModel = session.geminiModel;
-    const nvidiaModel = session.nvidiaModel;
+    const summaryModel = getActiveSummaryModel(provider, session);
 
     const { summary, lastError } = await summarizeTranscriptContent(transcriptText, {
         guildId,
-        groqKey,
-        geminiKey,
-        nvidiaKey,
+        groqKey: session.groqApiKey,
+        geminiKey: session.geminiApiKey,
+        nvidiaKey: session.nvidiaApiKey,
         provider,
-        groqModel,
-        geminiModel,
-        nvidiaModel,
+        groqModel: session.groqModel,
+        geminiModel: session.geminiModel,
+        nvidiaModel: session.nvidiaModel,
     });
 
     if (!summary) {
@@ -511,7 +572,7 @@ async function stopNotes(interaction) {
             participantCount: session.participants.size,
             participants: [...session.participants.values()],
             summaryProvider: provider,
-            summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
+            summaryModel,
             transcriptEntriesCount: session.transcript.length,
             status: 'failed',
             errorMessage: failureReason,
@@ -524,13 +585,13 @@ async function stopNotes(interaction) {
                 voiceChannelName: session.voiceChannelName,
                 startedAt: session.startedAt,
                 participants: new Map(session.participants),
-                groqApiKey: groqKey,
-                geminiApiKey: geminiKey,
-                nvidiaApiKey: nvidiaKey,
+                groqApiKey: session.groqApiKey,
+                geminiApiKey: session.geminiApiKey,
+                nvidiaApiKey: session.nvidiaApiKey,
                 summaryProvider: provider,
-                groqModel,
-                geminiModel,
-                nvidiaModel,
+                groqModel: session.groqModel,
+                geminiModel: session.geminiModel,
+                nvidiaModel: session.nvidiaModel,
             },
             transcriptText,
             createdAt: Date.now(),
@@ -562,79 +623,21 @@ async function stopNotes(interaction) {
         participantCount: session.participants.size,
         participants: [...session.participants.values()],
         summaryProvider: provider,
-        summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
+        summaryModel,
         transcriptEntriesCount: session.transcript.length,
         status: 'completed',
         summaryText: summary,
     });
 
-    const notesMarkdown = buildNotesMarkdown(session, summary);
-    const notesFile = new AttachmentBuilder(Buffer.from(notesMarkdown, 'utf-8'), { name: buildFilename(session) });
-
-    // Phase 3: Non-fatal publishing to Notion Meetings database
-    let notionOutput = '';
-    const guildConfig = getGuildConfig(guildId);
-    if (guildConfig.notionToken && guildConfig.meetingsDbId) {
-        try {
-            const notionRes = await publishMeetingNotes({
-                token: guildConfig.notionToken,
-                meetingsDbId: guildConfig.meetingsDbId,
-                session,
-                markdownContent: notesMarkdown,
-            });
-            if (notionRes.published && notionRes.url) {
-                notionOutput = `\n- **Notion Wiki:** [Open Meeting Page in Notion](${notionRes.url})`;
-            }
-        } catch (err) {
-            console.error(`[notes:${guildId}] Non-fatal failure publishing to Notion:`, err.message);
-        }
-    }
-
-    // Phase 4: Org Info sync (Automatic or prompt for manual)
-    let orgInfoOutput = '';
-    if (guildConfig.notionToken && guildConfig.orgInfoPageId) {
-        if (guildConfig.syncMode === 'automatic') {
-            try {
-                const syncRes = await syncOrgInfoForGuild({
-                    guildId,
-                    meetingNotes: notesMarkdown,
-                    force: true,
-                });
-                if (syncRes.success && syncRes.applied > 0) {
-                    const nbNotice = syncRes.noticeBoardUpdated ? ' & Central Notice Board' : '';
-                    orgInfoOutput = `\n- **Org Info:** 🔄 Auto-synced ${syncRes.applied} facts/decisions to Org Info${nbNotice}.`;
-                }
-            } catch (err) {
-                console.error(`[notes:${guildId}] Org Info auto-sync failed non-fatally:`, err.message);
-            }
-        } else {
-            orgInfoOutput = '\n- **Org Info:** ⏸️ Sync mode is manual. Use `/notes sync` to sync facts into Org Info.';
-        }
-    }
-
-    // Phase 6: Sync Action Items to Action Items DB & Personal Pages
-    let taskSyncOutput = '';
-    if (guildConfig.notionToken && (guildConfig.actionItemsDbId || guildConfig.membersDbId)) {
-        try {
-            const client = getNotionClient(guildConfig.notionToken);
-            const taskSyncRes = await syncMeetingTasksAndPersonalNotes({
-                client,
-                actionItemsDbId: guildConfig.actionItemsDbId,
-                membersDbId: guildConfig.membersDbId,
-                meetingNotes: notesMarkdown,
-                participants: session.participants,
-                session,
-            });
-            if (taskSyncRes.tasksCreated > 0 || taskSyncRes.membersUpdated > 0) {
-                taskSyncOutput = `\n- **Tasks & Personal Notes:** 📋 Synced ${taskSyncRes.tasksCreated} action item(s) to Action Items DB and updated ${taskSyncRes.membersUpdated} member page(s).`;
-            }
-        } catch (err) {
-            console.error(`[notes:${guildId}] Non-fatal error syncing meeting tasks to personal notes:`, err.message);
-        }
-    }
+    const { notesFile, suffix } = await publishAndSyncNotes({
+        guildId,
+        session,
+        summary,
+        includeOrgSync: true,
+    });
 
     await deliverOutput(interaction, guildId, {
-        content: `Notes are ready:${notionOutput}${orgInfoOutput}${taskSyncOutput}`,
+        content: `Notes are ready:${suffix}`,
         files: [notesFile],
     });
 }
@@ -651,7 +654,6 @@ async function handleButton(interaction) {
         return;
     }
 
-    // Strict cross-guild isolation check
     if (entry.guildId !== interaction.guildId) {
         await interaction.reply({
             content: '⛔ **Access Denied:** You cannot trigger a retry for a session from another server.',
@@ -664,28 +666,24 @@ async function handleButton(interaction) {
 
     const { guildId, sessionInfo, transcriptText } = entry;
     const guildConfig = getGuildConfig(guildId);
-
-    const groqKey = guildConfig.groqApiKey || sessionInfo.groqApiKey || process.env.GROQ_API_KEY;
-    const geminiKey = guildConfig.geminiApiKey || sessionInfo.geminiApiKey || process.env.GEMINI_API_KEY;
-    const nvidiaKey = guildConfig.nvidiaApiKey || sessionInfo.nvidiaApiKey || process.env.NVIDIA_API_KEY;
-    const provider = guildConfig.summaryProvider || sessionInfo.summaryProvider || process.env.SUMMARY_PROVIDER || 'nvidia';
-    const groqModel = guildConfig.groqModel || sessionInfo.groqModel || process.env.GROQ_SUMMARY_MODEL || 'openai/gpt-oss-120b';
-    const geminiModel = guildConfig.geminiModel || sessionInfo.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    const nvidiaModel = guildConfig.nvidiaModel || sessionInfo.nvidiaModel || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3-super-120b-a12b';
+    const settings = resolveSummarySettings({
+        ...sessionInfo,
+        ...guildConfig,
+    });
 
     const { summary, lastError } = await summarizeTranscriptContent(transcriptText, {
         guildId,
-        groqKey,
-        geminiKey,
-        nvidiaKey,
-        provider,
-        groqModel,
-        geminiModel,
-        nvidiaModel,
+        groqKey: settings.groqKey,
+        geminiKey: settings.geminiKey,
+        nvidiaKey: settings.nvidiaKey,
+        provider: settings.provider,
+        groqModel: settings.groqModel,
+        geminiModel: settings.geminiModel,
+        nvidiaModel: settings.nvidiaModel,
     });
 
     if (!summary) {
-        const failureReason = lastError?.message || 'Unknown error occurred during API summarization.';
+        const failureReason = sanitizeErrorMessage(lastError) || 'Unknown error occurred during API summarization.';
         const retryRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`retry_notes:${retryId}`)
@@ -699,7 +697,6 @@ async function handleButton(interaction) {
         return;
     }
 
-    // Disable the button on the previous message if possible
     const disabledRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`retried_${retryId}`)
@@ -709,7 +706,6 @@ async function handleButton(interaction) {
     );
     await interaction.message?.edit({ components: [disabledRow] }).catch(() => {});
 
-    // Deliver the finalized notes
     const effectiveSession = {
         ...sessionInfo,
         startedAt: sessionInfo.startedAt instanceof Date ? sessionInfo.startedAt : new Date(sessionInfo.startedAt),
@@ -724,55 +720,22 @@ async function handleButton(interaction) {
         durationSeconds: (Date.now() - effectiveSession.startedAt.getTime()) / 1000,
         participantCount: sessionInfo.participants?.size || 0,
         participants: sessionInfo.participants ? [...sessionInfo.participants.values()] : [],
-        summaryProvider: provider,
-        summaryModel: provider === 'nvidia' ? nvidiaModel : (provider === 'gemini' ? geminiModel : groqModel),
+        summaryProvider: settings.provider,
+        summaryModel: getActiveSummaryModel(settings.provider, settings),
         transcriptEntriesCount: transcriptText.split('\n').filter(Boolean).length,
         status: 'completed',
+        summaryText: summary,
     });
 
-    const notesMarkdown = buildNotesMarkdown(effectiveSession, summary);
-    const notesFile = new AttachmentBuilder(Buffer.from(notesMarkdown, 'utf-8'), { name: buildFilename(effectiveSession) });
-
-    // Non-fatal publishing to Notion Meetings database on retry
-    let notionOutput = '';
-    if (guildConfig.notionToken && guildConfig.meetingsDbId) {
-        try {
-            const notionRes = await publishMeetingNotes({
-                token: guildConfig.notionToken,
-                meetingsDbId: guildConfig.meetingsDbId,
-                session: effectiveSession,
-                markdownContent: notesMarkdown,
-            });
-            if (notionRes.published && notionRes.url) {
-                notionOutput = `\n- **Notion Wiki:** [Open Meeting Page in Notion](${notionRes.url})`;
-            }
-        } catch (err) {
-            console.error(`[notes:${guildId}] Non-fatal retry publishing to Notion:`, err.message);
-        }
-    }
-
-    let taskSyncOutput = '';
-    if (guildConfig.notionToken && (guildConfig.actionItemsDbId || guildConfig.membersDbId)) {
-        try {
-            const client = getNotionClient(guildConfig.notionToken);
-            const taskSyncRes = await syncMeetingTasksAndPersonalNotes({
-                client,
-                actionItemsDbId: guildConfig.actionItemsDbId,
-                membersDbId: guildConfig.membersDbId,
-                meetingNotes: notesMarkdown,
-                participants: effectiveSession.participants,
-                session: effectiveSession,
-            });
-            if (taskSyncRes.tasksCreated > 0 || taskSyncRes.membersUpdated > 0) {
-                taskSyncOutput = `\n- **Tasks & Personal Notes:** 📋 Synced ${taskSyncRes.tasksCreated} action item(s) to Action Items DB and updated ${taskSyncRes.membersUpdated} member page(s).`;
-            }
-        } catch (err) {
-            console.error(`[notes:${guildId}] Non-fatal retry syncing tasks to personal notes:`, err.message);
-        }
-    }
+    const { notesFile, suffix } = await publishAndSyncNotes({
+        guildId,
+        session: effectiveSession,
+        summary,
+        includeOrgSync: false,
+    });
 
     await deliverOutput(interaction, guildId, {
-        content: `**Notes successfully summarized on retry:**${notionOutput}${taskSyncOutput}`,
+        content: `**Notes successfully summarized on retry:**${suffix}`,
         files: [notesFile],
     });
 }
@@ -782,5 +745,6 @@ module.exports = {
     stopNotes,
     handleButton,
     deliverOutput,
+    summarizeTranscriptContent,
     retryCache,
 };

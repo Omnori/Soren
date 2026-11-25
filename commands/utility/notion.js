@@ -1,9 +1,8 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-const { getGuildConfig, setGuildNotionConfig, upsertUserMapping, getUserMappingsByGuild, deleteUserMapping } = require('../../lib/guildConfig');
+const { getGuildConfig, setGuildNotionConfig, upsertUserMapping, getUserMappingsByGuild } = require('../../lib/guildConfig');
 const { getNotionClient, validateWikiPageAccess } = require('../../lib/notion');
 const { scanNotionWiki } = require('../../lib/notionScanner');
 const { getGuildWiki, getNotionItemsByGuild } = require('../../lib/database');
-const { sendSafeChunkedReply } = require('../../lib/discordUtils');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -97,10 +96,10 @@ module.exports = {
 
                     // Validate access
                     try {
-                        const hasAccess = await validateWikiPageAccess(token, cleanWikiId);
-                        if (!hasAccess) {
+                        const validation = await validateWikiPageAccess(token, cleanWikiId);
+                        if (!validation?.valid) {
                             return interaction.editReply({
-                                content: '❌ Could not verify access to the provided Wiki Root Page ID. Check your Notion Integration Token and ensure your Integration is added to the page.',
+                                content: `❌ Could not verify access to the provided Wiki Root Page ID (${validation?.message || 'Access denied'}). Check your Notion Integration Token and ensure your Integration is added to the page.`,
                             });
                         }
                     } catch (err) {

@@ -478,7 +478,7 @@ async function runAssistantTests() {
         let callCount = 0;
 
         // Mock fetch that always returns empty text and endless distinct tool calls
-        global.fetch = async (url, options) => {
+        global.fetch = async (_url, _options) => {
             callCount++;
             return {
                 ok: true,
